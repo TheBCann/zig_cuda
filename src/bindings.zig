@@ -61,11 +61,11 @@ pub const CUresult = enum(c_int) {
     _, // open enum — driver may return codes we haven't mapped
 };
 
-// ── Initialization ───────────────────────────────────────────────────────
+/// ── Initialization ───────────────────────────────────────────────────────
 pub extern "cuda" fn cuInit(flags: c_uint) CUresult;
 pub extern "cuda" fn cuDriverGetVersion(driver_version: *c_int) CUresult;
 
-// ── Device management ────────────────────────────────────────────────────
+/// ── Device management ────────────────────────────────────────────────────
 pub extern "cuda" fn cuDeviceGet(device: *CUdevice, ordinal: c_int) CUresult;
 pub extern "cuda" fn cuDeviceGetCount(count: *c_int) CUresult;
 pub extern "cuda" fn cuDeviceGetName(
@@ -78,7 +78,7 @@ pub extern "cuda" fn cuDeviceTotalMem_v2(
     dev: CUdevice,
 ) CUresult;
 
-// ── Context management ──────────────────────────────────────────────────
+/// ── Context management ──────────────────────────────────────────────────
 // NOTE: _v2 versions are the canonical ABI symbols. Without _v2 you
 // link against legacy 32-bit-pointer stubs. Always use _v2.
 pub extern "cuda" fn cuCtxCreate_v2(
@@ -150,6 +150,27 @@ pub extern "cuda" fn cuStreamCreate(
 ) CUresult;
 pub extern "cuda" fn cuStreamSynchronize(stream: CUstream) CUresult;
 pub extern "cuda" fn cuStreamDestroy_v2(stream: CUstream) CUresult;
+
+/// Events
+/// CU_EVENT_DEFAULT = 0,
+/// CU_EVENT_BLOCKING_SYNC = 1,
+/// CU_EVENT_DISABLE_TIMING = 2
+pub extern "cuda" fn cuEventCreate(
+    event: *CUevent,
+    flags: c_uint,
+) CUresult;
+pub extern "cuda" fn cuEventDestroy_v2(event: CUevent) CUresult;
+pub extern "cuda" fn cuEventRecord(
+    event: CUevent,
+    stream: CUstream,
+) CUresult;
+
+pub extern "cuda" fn cuEventSynchronize(event: CUevent) CUresult;
+pub extern "cuda" fn cuEventElapsedTime(
+    ms: *f32,
+    start: CUevent,
+    end: CUevent,
+) CUresult;
 
 // ── Error string lookup (handy for debugging) ───────────────────────────
 pub extern "cuda" fn cuGetErrorName(

@@ -21,4 +21,5 @@ pub const DeviceBuffer = cuda.DeviceBuffer;
 /// Launch configuration
 pub const Dim3 = cuda.Dim3;
 pub const LaunchConfig = cuda.LaunchConfig;
+pub const Event = cuda.Event;
 

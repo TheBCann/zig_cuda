@@ -223,3 +223,37 @@ pub const Function = struct {
         ));
     }
 };
+
+/// CUDA event for timing GPU work. Pair two of them around a kernel
+/// launch and call `elapsed` to get milliseconds between them.
+pub const Event = struct {
+    handle: c.CUevent,
+
+    pub fn create() CudaError!Event {
+        var e: c.CUevent = null;
+        try toErr(c.cuEventCreate(&e, 0));
+        return .{ .handle = e };
+    }
+
+    pub fn deinit(self: Event) void {
+        _ = c.cuEventDestroy_v2(self.handle);
+    }
+
+    /// Record this event on the given stream (null = default stream)
+    pub fn record(self: Event, stream: c.CUstream) CudaError!void {
+        try toErr(c.cuEventRecord(self.handle, stream));
+    }
+
+    pub fn synchronize(self: Event) CudaError!void {
+        try toErr(c.cuEventSynchronize(self.handle));
+    }
+
+    /// Rreturn milliseconds elapsed betweeen `start` and `end`.
+    /// Both events must have been recorded; the caller is responsible
+    /// for synchronizing on `end` first.
+    pub fn elapsed(start: Event, end: Event) CudaError!f32 {
+        var ms: f32 = 0;
+        try toErr(c.cuEventElapsedTime(&ms, start.handle, end.handle));
+        return ms;
+    }
+};
