@@ -13,7 +13,26 @@ pub fn build(b: *std.Build) void {
     });
     const optimize = b.standardOptimizeOption(.{});
 
-    // PTX kernel: compiled to NVPTX assembly for sm_75 (GTX 1660 Ti).
+    // Public library module. Consumers `@import("cuda")` to get this.
+    const cuda_mod = b.addModule("cuda", .{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+    });
+
+    // Build all examples under examples/
+    buildExample(b, cuda_mod, target, optimize, "01_vector_add");
+}
+
+fn buildExample(
+    b: *std.Build,
+    cuda_mod: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    comptime name: []const u8,
+) void {
+    const dir = "examples/" ++ name;
+
+    // Device side: compile kernel.zig to PTX for sm_75.
     const ptx_target = b.resolveTargetQuery(.{
         .cpu_arch = .nvptx64,
         .os_tag = .cuda,
@@ -21,9 +40,9 @@ pub fn build(b: *std.Build) void {
     });
 
     const kernel = b.addObject(.{
-        .name = "kernel",
+        .name = name ++ "_kernel",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/kernel.zig"),
+            .root_source_file = b.path(dir ++ "/kernel.zig"),
             .target = ptx_target,
             .optimize = .ReleaseFast,
         }),
@@ -33,23 +52,19 @@ pub fn build(b: *std.Build) void {
 
     const ptx = kernel.getEmittedAsm();
 
-    // Optional: install the PTX so you can `grep .entry zig-out/bin/kernel.ptx`
-    // for symbol inspection. Not needed at runtime since we @embedFile it.
-    const install_ptx = b.addInstallFile(ptx, "bin/kernel.ptx");
-    b.getInstallStep().dependOn(&install_ptx.step);
-
-    // Host executable.
+    // Host side: regular executable that embeds the PTX.
     const exe = b.addExecutable(.{
-        .name = "zig_cuda",
+        .name = name,
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
+            .root_source_file = b.path(dir ++ "/main.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "cuda", .module = cuda_mod },
+            },
         }),
     });
 
-    // Embed the PTX bytes into the binary so we don't depend on a
-    // filesystem path at runtime.
     exe.root_module.addAnonymousImport("kernel_ptx", .{
         .root_source_file = ptx,
     });
@@ -63,6 +78,6 @@ pub fn build(b: *std.Build) void {
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_cmd.addArgs(args);
 
-    const run_step = b.step("run", "Run the app");
+    const run_step = b.step("run-" ++ name, "Run the " ++ name ++ " example");
     run_step.dependOn(&run_cmd.step);
 }

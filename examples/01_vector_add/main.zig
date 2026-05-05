@@ -1,5 +1,5 @@
 const std = @import("std");
-const cuda = @import("cuda.zig");
+const cuda = @import("cuda");
 
 pub fn main(init: std.process.Init) !void {
     const a = init.gpa;
