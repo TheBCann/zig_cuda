@@ -16,16 +16,13 @@ Working on:
 - Arch Linux, kernel 6.19, NVIDIA driver via `nvidia-dkms`
 - GTX 1660 Ti (Turing, sm_75)
 
-The project is small: ~160 lines of bindings, ~225 lines of idiomatic
-wrappers, ~70 lines of host code, ~35 lines of device code. It exists
-primarily to prove the toolchain works and to document the workarounds
-needed to make it work.
-
 ## Building
 
 ```sh
-zig build              # build everything (host exe + PTX kernel)
-zig build run          # build and run the vector_add example
+zig build                                          # build everything
+zig build run-01_vector_add                        # minimal launch
+zig build run-02_timed_vector_add                  # kernel-only timing
+zig build run-03_pcie_truth -Doptimize=ReleaseSafe # honest end-to-end timing
 ```
 
 Expected output:
@@ -40,10 +37,13 @@ N=1048576  max error = 0
 ```
 build.zig              # cross-compiles host + PTX, embeds PTX into host
 src/
+  root.zig             # public API (re-exports from cuda.zig + bindings.zig)
   bindings.zig         # raw `extern "cuda"` declarations
   cuda.zig             # idiomatic Zig wrappers (Device, Context, Module, ...)
-  kernel.zig           # device code, compiled to PTX
-  main.zig             # host code, runs vector_add on the GPU
+examples/
+  01_vector_add/       # minimal launch + correctness check
+  02_timed_vector_add/ # adds CUDA event timing vs CPU reference
+  03_pcie_truth/       # exposes PCIe transfer overhead with both timings
 ```
 
 ## Workarounds
@@ -169,26 +169,51 @@ from there.
 wired up in `build.zig` via `addAnonymousImport`. The single executable
 contains the PTX bytes inline. No filesystem dependency at runtime.
 
+## Performance
+
+Measured on a GTX 1660 Ti, i7-9700K, PCIe Gen3 x16, with `-Doptimize=ReleaseSafe`.
+
+For N = 16M elements (64 MB per buffer):
+
+```
+CPU (AVX2 reference):       13.8 ms
+GPU kernel only:            0.9 ms   (16x vs CPU)
+GPU end-to-end (w/ PCIe):   25.3 ms  (0.5x vs CPU)
+PCIe transfer overhead:     24.4 ms  (97% of end-to-end)
+```
+
+Vector add has arithmetic intensity 0.083 FLOPs/byte — the worst possible
+case for GPU advantage. The kernel itself runs 16x faster than the CPU,
+but PCIe transfers dominate the end-to-end time so heavily that the GPU
+loses on a single-shot operation. Real GPU workloads (matmul, attention,
+convolution) win because they keep data resident on the GPU across many
+kernel calls and have arithmetic intensity 1000x higher.
+
+See [`examples/03_pcie_truth/main.zig`](examples/03_pcie_truth/main.zig) for the full benchmark.
+
 ## What's next
 
-The bindings are minimal — about 15 functions, enough to launch a kernel.
-Adding more is mechanical: copy the C signature from
+The bindings are minimal — about 25 functions, enough to launch a kernel
+and time it. Adding more is mechanical: copy the C signature from
 `docs.nvidia.com/cuda/cuda-driver-api/`, write the `pub extern` declaration
 matching the ABI symbol (`_v2` if present), and optionally wrap it in
 `cuda.zig`.
 
-Useful additions in roughly increasing order of effort:
+Coming next, in roughly increasing order of difficulty:
 
-- `cuEventCreate` / `cuEventRecord` / `cuEventElapsedTime` for timing.
-  Three more bindings; ~20 lines of wrapper code. Lets you measure kernel
-  duration and compare against a host-side reference loop.
-- A reduction kernel using shared memory (`addrspace(.shared)`).
-  Introduces intra-block synchronization (`@workGroupBarrier()`) and the
-  hierarchical thread/block model.
-- Tiled matmul. The smallest kernel where memory bandwidth, occupancy,
-  and shared-memory bank conflicts start to matter.
+- A reduction (sum) kernel using shared memory (`addrspace(.shared)`)
+  and `@workGroupBarrier()`. Introduces the hierarchical block/thread
+  model — threads cooperate within a block but can't synchronize across
+  blocks within a single kernel launch.
+- Tiled matrix multiplication. The smallest workload where the GPU's
+  bandwidth advantage decisively wins, even with PCIe transfers included
+  (~50–100x speedup vs. CPU because arithmetic intensity is high enough
+  to amortize the transfer cost).
+- Multi-stream async transfers (`cuMemcpyHtoDAsync`, `cuStreamCreate`).
+  Pipelines copies with kernel execution to hide PCIe latency. The 1660
+  Ti has separate copy engines for upload and download, so a fully-
+  streamed pipeline gets near-2x effective PCIe bandwidth.
 
 ## License
 
-MIT or whatever you like. The bindings are mechanical translations of
-NVIDIA's public CUDA Driver API; the wrapper code is original.
+MIT. See `LICENSE`.

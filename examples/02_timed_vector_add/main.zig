@@ -17,7 +17,7 @@ pub fn main(init: std.process.Init) !void {
     defer module.unload();
     const kernel = try module.getFunction("kernel_$_vector_add");
 
-    const N: u32 = 1 << 24;
+    const N: u32 = 1 << 20;
     const host_x = try a.alloc(f32, N);
     defer a.free(host_x);
     const host_y = try a.alloc(f32, N);
@@ -58,18 +58,21 @@ pub fn main(init: std.process.Init) !void {
     const grid: c_uint = (N + block - 1) / block;
     const runtime_n = N;
 
+    try dx.copyFromHost(host_x);
+    try dy.copyFromHost(host_y);
+
     try start.record(null);
-    try dx.copyFromHost(host_x);          // moved INSIDE
-    try dy.copyFromHost(host_y);          // moved INSIDE
     try kernel.launch(.{
         .grid = .{ .x = grid },
         .block = .{ .x = block },
     }, .{ runtime_n, dx.ptr, dy.ptr, dout.ptr });
-    try dout.copyToHost(host_out);        // moved INSIDE
     try end.record(null);
 
     try end.synchronize();
     const gpu_ms = try cuda.Event.elapsed(start, end);
+
+    try dout.copyToHost(host_out);
+
 
     // ── Verify ───────────────────────────────────────────────────────
     var max_err: f32 = 0;
@@ -81,6 +84,6 @@ pub fn main(init: std.process.Init) !void {
     const speedup = cpu_ms / gpu_ms;
     std.debug.print("\nN = {d}\n", .{N});
     std.debug.print("CPU: {d:.3} ms\n", .{cpu_ms});
-    std.debug.print("GPU: {d:.3} ms ({d:.1}x speedup, end-to-end)\n", .{ gpu_ms, speedup });
+    std.debug.print("GPU: {d:.3} ms ({d:.1}x speedup, kernel only)\n", .{ gpu_ms, speedup });
     std.debug.print("Max error: {d}\n", .{max_err});
 }
