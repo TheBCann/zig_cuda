@@ -23,6 +23,7 @@ pub fn build(b: *std.Build) void {
     buildExample(b, cuda_mod, target, optimize, "01_vector_add");
     buildExample(b, cuda_mod, target, optimize, "02_timed_vector_add");
     buildExample(b, cuda_mod, target, optimize, "03_pcie_truth");
+    buildExample(b, cuda_mod, target, optimize, "04_reduction");
 }
 
 fn buildExample(

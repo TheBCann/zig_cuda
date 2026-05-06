@@ -128,6 +128,12 @@ pub extern "cuda" fn cuMemsetD8_v2(
     n: usize,
 ) CUresult;
 
+pub extern "cuda" fn cuMemsetD32_v2(
+    dst: CUdeviceptr,
+    value: c_uint,
+    n: usize,
+) CUresult;
+
 // ── Kernel launch ───────────────────────────────────────────────────────
 pub extern "cuda" fn cuLaunchKernel(
     f: CUfunction,
