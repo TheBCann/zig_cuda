@@ -19,13 +19,15 @@ Working on:
 ## Building
 
 ```sh
-zig build                                          # build everything
-zig build run-01_vector_add                        # minimal launch
-zig build run-02_timed_vector_add                  # kernel-only timing
-zig build run-03_pcie_truth -Doptimize=ReleaseSafe # honest end-to-end timing
+zig build                                                # build everything
+zig build run-01_vector_add                              # minimal launch
+zig build run-02_timed_vector_add                        # kernel-only timing
+zig build run-03_pcie_truth      -Doptimize=ReleaseSafe  # honest end-to-end timing
+zig build run-04_reduction       -Doptimize=ReleaseSafe  # shared-memory reduction
+zig build run-05_matmul          -Doptimize=ReleaseSafe  # tiled matmul
 ```
 
-Expected output:
+Expected output for the first example:
 
 ```
 Device: NVIDIA GeForce GTX 1660 Ti
@@ -44,6 +46,8 @@ examples/
   01_vector_add/       # minimal launch + correctness check
   02_timed_vector_add/ # adds CUDA event timing vs CPU reference
   03_pcie_truth/       # exposes PCIe transfer overhead with both timings
+  04_reduction/        # shared-memory tree reduction (sum)
+  05_matmul/           # tiled 2D matrix multiply (the GPU-shines example)
 ```
 
 ## Workarounds
@@ -173,7 +177,7 @@ contains the PTX bytes inline. No filesystem dependency at runtime.
 
 Measured on a GTX 1660 Ti, i7-9700K, PCIe Gen3 x16, with `-Doptimize=ReleaseSafe`.
 
-For N = 16M elements (64 MB per buffer):
+For vector add, N = 16M elements (64 MB per buffer):
 
 ```
 CPU (AVX2 reference):       13.8 ms
@@ -185,11 +189,25 @@ PCIe transfer overhead:     24.4 ms  (97% of end-to-end)
 Vector add has arithmetic intensity 0.083 FLOPs/byte — the worst possible
 case for GPU advantage. The kernel itself runs 16x faster than the CPU,
 but PCIe transfers dominate the end-to-end time so heavily that the GPU
-loses on a single-shot operation. Real GPU workloads (matmul, attention,
-convolution) win because they keep data resident on the GPU across many
-kernel calls and have arithmetic intensity 1000x higher.
+loses on a single-shot operation.
 
 See [`examples/03_pcie_truth/main.zig`](examples/03_pcie_truth/main.zig) for the full benchmark.
+
+For 1024×1024×1024 matrix multiply (tiled, TILE=16):
+
+```
+CPU naive triple loop:  1364 ms   (1.6 GFLOPS)
+GPU kernel only:        3.8 ms    (560 GFLOPS, 356x vs CPU)
+GPU end-to-end:         5.8 ms    (237x vs CPU)
+```
+
+Tiled matmul has arithmetic intensity ~16 FLOPs/byte — high enough that
+PCIe transfer cost stops mattering. This is the workload pattern that
+makes GPUs useful: enough compute per byte loaded that the bandwidth
+advantage compounds. Real ML kernels (attention, convolutions, large
+matmuls) sit in this regime.
+
+See [`examples/05_matmul/main.zig`](examples/05_matmul/main.zig) for the full benchmark.
 
 ## What's next
 
@@ -201,18 +219,19 @@ matching the ABI symbol (`_v2` if present), and optionally wrap it in
 
 Coming next, in roughly increasing order of difficulty:
 
-- A reduction (sum) kernel using shared memory (`addrspace(.shared)`)
-  and `@workGroupBarrier()`. Introduces the hierarchical block/thread
-  model — threads cooperate within a block but can't synchronize across
-  blocks within a single kernel launch.
-- Tiled matrix multiplication. The smallest workload where the GPU's
-  bandwidth advantage decisively wins, even with PCIe transfers included
-  (~50–100x speedup vs. CPU because arithmetic intensity is high enough
-  to amortize the transfer cost).
+- Mark Harris reduction optimization passes. Take the working
+  `04_reduction` kernel and rewrite it 3–4 times, each version applying
+  one classical optimization (eliminate warp divergence, halve threads
+  doubling loads at boundary, unroll the last warp via warp-synchronous
+  programming). Each pass produces a measurable speedup and teaches a
+  real concept.
 - Multi-stream async transfers (`cuMemcpyHtoDAsync`, `cuStreamCreate`).
   Pipelines copies with kernel execution to hide PCIe latency. The 1660
   Ti has separate copy engines for upload and download, so a fully-
   streamed pipeline gets near-2x effective PCIe bandwidth.
+- Pinned host memory (`cuMemHostAlloc`). Eliminates the driver's hidden
+  staging buffer for HtoD transfers, ~50% bandwidth improvement on PCIe
+  copies.
 
 ## License
 
