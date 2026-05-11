@@ -25,6 +25,7 @@ pub fn build(b: *std.Build) void {
     buildExample(b, cuda_mod, target, optimize, "03_pcie_truth");
     buildExample(b, cuda_mod, target, optimize, "04_reduction");
     buildExample(b, cuda_mod, target, optimize, "05_matmul");
+    buildExample(b, cuda_mod, target, optimize, "06_reduction_v2");
 }
 
 fn buildExample(
