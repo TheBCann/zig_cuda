@@ -2,7 +2,7 @@ const std = @import("std");
 const cuda = @import("cuda");
 
 pub fn main(init: std.process.Init) !void {
-    const a = init.gpa;
+    const allocator = init.gpa;
     const io = init.io;
 
     try cuda.init();
@@ -18,21 +18,20 @@ pub fn main(init: std.process.Init) !void {
     const kernel = try module.getFunction("kernel_$_vector_add");
 
     const N: u32 = 1 << 20;
-    const host_x = try a.alloc(f32, N);
-    defer a.free(host_x);
-    const host_y = try a.alloc(f32, N);
-    defer a.free(host_y);
-    const host_out = try a.alloc(f32, N);
-    defer a.free(host_out);
-    const cpu_out = try a.alloc(f32, N);
-    defer a.free(cpu_out);
+    const host_x = try allocator.alloc(f32, N);
+    defer allocator.free(host_x);
+    const host_y = try allocator.alloc(f32, N);
+    defer allocator.free(host_y);
+    const host_out = try allocator.alloc(f32, N);
+    defer allocator.free(host_out);
+    const cpu_out = try allocator.alloc(f32, N);
+    defer allocator.free(cpu_out);
 
     for (host_x, host_y, 0..) |*x, *y, i| {
         x.* = @floatFromInt(i % 100);
         y.* = 2.0;
     }
 
-    // ── CPU reference ────────────────────────────────────────────────
     const cpu_start: std.Io.Clock.Timestamp = .now(io, .awake);
     for (host_x, host_y, cpu_out) |x, y, *o| {
         o.* = x + y;
@@ -40,7 +39,6 @@ pub fn main(init: std.process.Init) !void {
     const cpu_us = cpu_start.untilNow(io).raw.toMicroseconds();
     const cpu_ms = @as(f32, @floatFromInt(cpu_us)) / 1000.0;
 
-    // ── GPU ──────────────────────────────────────────────────────────
     const Buf = cuda.DeviceBuffer(f32);
     const dx = try Buf.alloc(N);
     defer dx.free();

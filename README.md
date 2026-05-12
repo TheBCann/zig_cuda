@@ -23,8 +23,10 @@ zig build                                                # build everything
 zig build run-01_vector_add                              # minimal launch
 zig build run-02_timed_vector_add                        # kernel-only timing
 zig build run-03_pcie_truth      -Doptimize=ReleaseSafe  # honest end-to-end timing
-zig build run-04_reduction       -Doptimize=ReleaseSafe  # shared-memory reduction
+zig build run-04_reduction       -Doptimize=ReleaseSafe  # reduction v1 (tree)
 zig build run-05_matmul          -Doptimize=ReleaseSafe  # tiled matmul
+zig build run-06_reduction_v2    -Doptimize=ReleaseSafe  # reduction v2 (halve threads)
+zig build run-07_reduction_v3    -Doptimize=ReleaseSafe  # reduction v3 (warp shuffles)
 ```
 
 Expected output for the first example:
@@ -44,8 +46,10 @@ src/
   cuda.zig             # idiomatic Zig wrappers (Device, Context, Module, ...)
 examples/
   01_vector_add/       # minimal launch + correctness check
-  02_timed_vector_add/ # adds CUDA event timing vs CPU reference
-  03_pcie_truth/       # exposes PCIe transfer overhead with both timings
+  04_reduction/        # shared-memory tree reduction (sum) — baseline
+  05_matmul/           # tiled 2D matrix multiply (the GPU-shines example)
+  06_reduction_v2/     # halve threads, double loads at boundary (1.7x faster)
+  07_reduction_v3/     # warp-shuffle reduction (1.7x faster again, 2.7x over v1)
   04_reduction/        # shared-memory tree reduction (sum)
   05_matmul/           # tiled 2D matrix multiply (the GPU-shines example)
 ```
@@ -209,29 +213,52 @@ matmuls) sit in this regime.
 
 See [`examples/05_matmul/main.zig`](examples/05_matmul/main.zig) for the full benchmark.
 
+For 1M-element f32 sum reduction (N = 1 << 20), three successive kernel rewrites:
+
+​```
+CPU loop (autovectorized):    0.9 ms
+GPU v1 (tree reduction):      0.074 ms   (12x vs CPU)
+GPU v2 (halve threads):       0.043 ms   (21x vs CPU)
+GPU v3 (warp shuffles):       0.025 ms   (37x vs CPU)
+​```
+
+v1 → v2 (1.7x): each thread loads two elements and adds at load time, so a
+block covers 2× the input. Half the launch overhead, half the wasted
+threads. Structural improvement, not just a tweak.
+
+v2 → v3 (1.7x): the in-warp portion of the reduction (5 of 8 steps) drops
+all shared-memory traffic and barriers, replaced by `shfl.sync.down.b32`
+warp-level register exchanges. One cycle per step instead of ~60.
+
+See [`examples/04_reduction/`](examples/04_reduction/),
+[`examples/06_reduction_v2/`](examples/06_reduction_v2/), and
+[`examples/07_reduction_v3/`](examples/07_reduction_v3/) for the kernels
+side by side.
+
 ## What's next
 
-The bindings are minimal — about 25 functions, enough to launch a kernel
-and time it. Adding more is mechanical: copy the C signature from
-`docs.nvidia.com/cuda/cuda-driver-api/`, write the `pub extern` declaration
-matching the ABI symbol (`_v2` if present), and optionally wrap it in
-`cuda.zig`.
+The bindings cover ~25 functions, enough to launch kernels and time them.
+Production-grade usage needs more — async streams, pinned host memory,
+multi-GPU contexts, peer-to-peer transfers. Adding bindings is mechanical:
+copy the C signature from `docs.nvidia.com/cuda/cuda-driver-api/`, write
+the `pub extern` declaration matching the ABI symbol (`_v2` if present),
+optionally wrap in `cuda.zig`.
 
-Coming next, in roughly increasing order of difficulty:
+Coming next:
 
-- Mark Harris reduction optimization passes. Take the working
-  `04_reduction` kernel and rewrite it 3–4 times, each version applying
-  one classical optimization (eliminate warp divergence, halve threads
-  doubling loads at boundary, unroll the last warp via warp-synchronous
-  programming). Each pass produces a measurable speedup and teaches a
-  real concept.
-- Multi-stream async transfers (`cuMemcpyHtoDAsync`, `cuStreamCreate`).
-  Pipelines copies with kernel execution to hide PCIe latency. The 1660
-  Ti has separate copy engines for upload and download, so a fully-
-  streamed pipeline gets near-2x effective PCIe bandwidth.
+- Async streams (`cuStreamCreate`, `cuMemcpyHtoDAsync_v2`,
+  `cuMemcpyDtoHAsync_v2`). Pipelines copies with kernel execution to hide
+  PCIe latency. The 1660 Ti has separate copy engines for upload and
+  download, so a fully-streamed pipeline gets near-2× effective PCIe
+  bandwidth.
 - Pinned host memory (`cuMemHostAlloc`). Eliminates the driver's hidden
-  staging buffer for HtoD transfers, ~50% bandwidth improvement on PCIe
-  copies.
+  staging buffer for HtoD transfers, ~50% bandwidth improvement on
+  page-locked copies.
+- Comptime-driven kernel specialization. Use Zig's `comptime` to
+  generate kernel variants from a single source (different tile sizes,
+  element types, reduction operators) without C++-style template
+  machinery. This is the direction that makes Zig CUDA distinct from
+  CUDA C++, not just a translation of it.
 
 ## License
 
