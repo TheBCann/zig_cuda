@@ -235,30 +235,52 @@ See [`examples/04_reduction/`](examples/04_reduction/),
 [`examples/07_reduction_v3/`](examples/07_reduction_v3/) for the kernels
 side by side.
 
+For 16M-element f32 vector add (the same workload from example 03), with
+async streams and pinned memory:
+
+​```
+Sync baseline (pageable, default stream):   22.1 ms   ( 9.1 GB/s)
+Streamed (pinned, 2 streams, 4 chunks):     12.4 ms   (16.2 GB/s)
+Speedup: 1.78x
+​```
+
+The kernel itself is unchanged — what changed is how transfers and
+compute are scheduled. Pinned host memory bypasses the driver's hidden
+staging buffer (faster per-copy throughput); two streams alternating
+across four chunks let upload, kernel, and download happen concurrently
+on the 1660 Ti's separate copy engines.
+
+PCIe Gen3 x16 has ~16 GB/s theoretical bandwidth per direction. The
+streamed version approaches saturation by using both directions
+simultaneously — uploads on one engine, downloads on the other.
+
+This is the technique that makes single-shot GPU operations viable for
+transfer-bound workloads (ML inference activations, KV cache movement,
+streaming data pipelines).
+
+See [`examples/08_streams/main.zig`](examples/08_streams/main.zig).
+
 ## What's next
 
-The bindings cover ~25 functions, enough to launch kernels and time them.
-Production-grade usage needs more — async streams, pinned host memory,
-multi-GPU contexts, peer-to-peer transfers. Adding bindings is mechanical:
-copy the C signature from `docs.nvidia.com/cuda/cuda-driver-api/`, write
-the `pub extern` declaration matching the ABI symbol (`_v2` if present),
-optionally wrap in `cuda.zig`.
+The bindings cover ~30 functions now, including async transfers, pinned
+memory, streams, and events — enough for production-grade kernel
+scheduling on a single GPU.
 
 Coming next:
 
-- Async streams (`cuStreamCreate`, `cuMemcpyHtoDAsync_v2`,
-  `cuMemcpyDtoHAsync_v2`). Pipelines copies with kernel execution to hide
-  PCIe latency. The 1660 Ti has separate copy engines for upload and
-  download, so a fully-streamed pipeline gets near-2× effective PCIe
-  bandwidth.
-- Pinned host memory (`cuMemHostAlloc`). Eliminates the driver's hidden
-  staging buffer for HtoD transfers, ~50% bandwidth improvement on
-  page-locked copies.
 - Comptime-driven kernel specialization. Use Zig's `comptime` to
   generate kernel variants from a single source (different tile sizes,
   element types, reduction operators) without C++-style template
   machinery. This is the direction that makes Zig CUDA distinct from
   CUDA C++, not just a translation of it.
+- Multi-GPU support (`cuCtxSetCurrent`, peer-to-peer transfers). The
+  bindings already cover `cuCtxSetCurrent` but no example exercises it.
+- Higher-level launch ergonomics. The current `kernel.launch(.{...},
+  .{args})` works but isn't typed end-to-end. A comptime function
+  signature check would catch arg-count and arg-type mismatches at
+  build time instead of as silent runtime corruption.
+- Broader BLAS-style kernels. A vectorized matmul using
+  `ld.global.v4.f32` should approach 1 TFLOPS on the 1660 Ti.
 
 ## License
 
