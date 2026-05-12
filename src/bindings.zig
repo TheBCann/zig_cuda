@@ -157,6 +157,41 @@ pub extern "cuda" fn cuStreamCreate(
 pub extern "cuda" fn cuStreamSynchronize(stream: CUstream) CUresult;
 pub extern "cuda" fn cuStreamDestroy_v2(stream: CUstream) CUresult;
 
+// ── Async memory transfers (require a stream) ───────────────────────────
+// Same arguments as the synchronous _v2 versions, plus a stream handle.
+// Returns immediately; the actual copy happens when the stream gets to it.
+// Caller must keep both src and dst memory valid until the copy completes
+// (use cuStreamSynchronize, an event, or another sync point)
+pub extern "cuda" fn cuMemcpyHtoDAsync_v2(
+    dst: CUdeviceptr,
+    src: *const anyopaque,
+    bytes: usize,
+    stream: CUstream,
+) CUresult;
+pub extern "cuda" fn cuMemcpyDtoHAsync_v2(
+    dst: *anyopaque,
+    src: CUdeviceptr,
+    bytes: usize,
+    stream: CUstream,
+) CUresult;
+
+// ── Pinned (page-locked) host memory ────────────────────────────────────
+// Pinned memory cannot be paged out by the OS. DMA can read it directly
+// without the driver having to first copy through a hidden staging buffer.
+// Result: ~2x faster HtoD/DtoH transfers. Trade-off: pinned memory is a
+// limited OS resource; don't allocate gigabytes of it.
+//
+// Flags: CU_MEMHOSTALLOC_PORTABLE = 0x01 (visible to all CUDA contexts)
+//        CU_MEMHOSTALLOC_DEVICEMAP = 0x02 (also mappable into device addr space)
+//        CU_MEMHOSTALLOC_WRITECOMBINED = 0x04 (write-combined, faster HtoD)
+// For typical use, flags = 0 is correct.
+pub extern "cuda" fn cuMemHostAlloc(
+    pp: *?*anyopaque,
+    bytesize: usize,
+    flags: c_uint,
+) CUresult;
+pub extern "cuda" fn cuMemFreeHost(p: *anyopaque) CUresult;
+
 /// Events
 /// CU_EVENT_DEFAULT = 0,
 /// CU_EVENT_BLOCKING_SYNC = 1,

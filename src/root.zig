@@ -9,17 +9,22 @@ pub const CudaError = cuda.CudaError;
 pub const logError = cuda.logError;
 pub const init = cuda.init;
 
-/// Core types
+// Core types
 pub const Device = cuda.Device;
 pub const Context = cuda.Context;
 pub const Module = cuda.Module;
 pub const Function = cuda.Function;
+pub const Stream = cuda.Stream;
 
-/// Memory
+
+// Memory
 pub const DeviceBuffer = cuda.DeviceBuffer;
+pub const PinnedBuffer = cuda.PinnedBuffer;
 
-/// Launch configuration
+// Launch configuration
 pub const Dim3 = cuda.Dim3;
 pub const LaunchConfig = cuda.LaunchConfig;
+
+// Timing
 pub const Event = cuda.Event;
 

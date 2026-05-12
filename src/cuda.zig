@@ -167,6 +167,79 @@ pub fn DeviceBuffer(comptime T: type) type {
                 host.len * @sizeOf(T),
             ));
         }
+
+        pub fn copyFromHostAsync(self: Self, host: []const T, stream: Stream) CudaError!void {
+            std.debug.assert(host.len <= self.len);
+            try toErr(c.cuMemcpyHtoDAsync_v2(
+                self.ptr,
+                host.ptr,
+                host.len * @sizeOf(T),
+                stream.handle,
+            ));
+        }
+
+        pub fn copyToHostAsync(self: Self, host: []T, stream: Stream) CudaError!void {
+            std.debug.assert(host.len <= self.len);
+            try toErr(c.cuMemcpyDtoHAsync_v2(
+                host.ptr,
+                self.ptr,
+                host.len * @sizeOf(T),
+                stream.handle,
+            ));
+        }
+    };
+}
+
+/// CUDA stream: an ordered queue of operations. Operations within a stream
+/// are sequential; operations in different streams may execute concurrently.
+/// Use streams to pipeline copies with kernel execution.
+pub const Stream = struct {
+    handle: c.CUstream,
+
+    pub fn create() CudaError!Stream {
+        var s: c.CUstream = null;
+        try toErr(c.cuStreamCreate(&s, 0));
+        return .{ .handle = s };
+    }
+
+    pub fn deinit(self: Stream) void {
+        _ = c.cuStreamDestroy_v2(self.handle);
+    }
+
+    /// block the host until all queued operations on this stream complete.
+    pub fn synchronize(self: Stream) CudaError!void {
+        try toErr(c.cuStreamSynchronize(self.handle));
+    }
+};
+
+/// Page-locked host buffer. DMA transfers between this memory and the GPU
+/// bypass the driver's hidden staging step, yielding ~2x faster PCIe copies.
+/// Pinned memory is a limited OS resource - allocate sparingly.
+pub fn PinnedBuffer(comptime T: type) type {
+    return struct {
+        ptr: [*]T,
+        len: usize,
+
+        const Self = @This();
+
+        pub fn alloc(n: usize) CudaError!Self {
+            var raw: ?*anyopaque = null;
+            try toErr(c.cuMemHostAlloc(&raw, n * @sizeOf(T), 0));
+            return .{
+                .ptr = @ptrCast(@alignCast(raw.?)),
+                .len = n,
+            };
+        }
+
+        pub fn free(self: Self) void {
+            _ = c.cuMemFreeHost(self.ptr);
+        }
+
+        /// Returns a regular Zig slice view of the pinned memory.
+        /// Use this to read/write the buffer from the host like normal memory.
+        pub fn slice(self: Self) []T {
+            return self.ptr[0..self.len];
+        }
     };
 }
 
@@ -248,7 +321,7 @@ pub const Event = struct {
         try toErr(c.cuEventSynchronize(self.handle));
     }
 
-    /// Rreturn milliseconds elapsed betweeen `start` and `end`.
+        /// Returns milliseconds elapsed between `start` and `end`.
     /// Both events must have been recorded; the caller is responsible
     /// for synchronizing on `end` first.
     pub fn elapsed(start: Event, end: Event) CudaError!f32 {
