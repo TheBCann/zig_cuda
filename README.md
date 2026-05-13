@@ -260,6 +260,31 @@ streaming data pipelines).
 
 See [`examples/08_streams/main.zig`](examples/08_streams/main.zig).
 
+For 1024×1024×1024 matmul, three kernels generated from one Zig source
+via comptime specialization:
+
+​```
+[ 8×8×8 ]   tile=8,  grid=128×128, block=8×8     →  6.57 ms   (327 GFLOPS)
+[16×16×16]  tile=16, grid=64×64,   block=16×16   →  4.28 ms   (502 GFLOPS)
+[32×32×32]  tile=32, grid=32×32,   block=32×32   →  4.12 ms   (521 GFLOPS)
+​```
+
+The 32×32 variant hits the 1024 threads/block hardware limit but uses
+each loaded shared-memory element 32 times instead of 16, yielding
+better reuse despite lower per-SM occupancy. The optimal tile depends
+on the hardware (more shared memory per SM → 32 wins decisively; older
+cards → 16 wins). This is exactly why you'd want multiple specialized
+kernels in the first place: ship variants, dispatch by capability.
+
+Each kernel is a distinct PTX `.entry` compiled from the same source,
+with tile sizes baked in as immediates and a Zig `@compileError` rejecting
+invalid configs at build time. The same mechanism extends to element
+types (`f32`, `f16`), reduction operators, and accumulator precision —
+the kind of compile-time specialization CUDA C++ templates approximate
+but can't fully express.
+
+See [`examples/09_comptime_matmul/`](examples/09_comptime_matmul/).
+
 ## What's next
 
 The bindings cover ~30 functions now, including async transfers, pinned
@@ -268,19 +293,18 @@ scheduling on a single GPU.
 
 Coming next:
 
-- Comptime-driven kernel specialization. Use Zig's `comptime` to
-  generate kernel variants from a single source (different tile sizes,
-  element types, reduction operators) without C++-style template
-  machinery. This is the direction that makes Zig CUDA distinct from
-  CUDA C++, not just a translation of it.
 - Multi-GPU support (`cuCtxSetCurrent`, peer-to-peer transfers). The
-  bindings already cover `cuCtxSetCurrent` but no example exercises it.
-- Higher-level launch ergonomics. The current `kernel.launch(.{...},
-  .{args})` works but isn't typed end-to-end. A comptime function
-  signature check would catch arg-count and arg-type mismatches at
-  build time instead of as silent runtime corruption.
-- Broader BLAS-style kernels. A vectorized matmul using
-  `ld.global.v4.f32` should approach 1 TFLOPS on the 1660 Ti.
+  bindings already cover `cuCtxSetCurrent`; no example exercises it yet.
+- Typed kernel launch ergonomics. The current `kernel.launch(.{...},
+  .{args})` works but doesn't verify arg types or counts at compile time.
+  A comptime function-signature check would catch mismatches at build
+  time instead of as silent runtime corruption.
+- A more substantive kernel: attention. The unfused vanilla attention
+  forward pass is ~50 lines of kernel code and produces a real LLM
+  inference primitive. Distinct enough from matmul to exercise different
+  parts of the API surface (broadcast, softmax along an axis, masking).
+- Vectorized loads (`ld.global.v4.f32`). Loading 4 floats per instruction
+  rather than 1 should push matmul toward ~1 TFLOPS on the 1660 Ti.
 
 ## License
 
