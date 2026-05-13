@@ -28,6 +28,7 @@ pub fn build(b: *std.Build) void {
     buildExample(b, cuda_mod, target, optimize, "06_reduction_v2");
     buildExample(b, cuda_mod, target, optimize, "07_reduction_v3");
     buildExample(b, cuda_mod, target, optimize, "08_streams");
+    buildExample(b, cuda_mod, target, optimize, "09_comptime_matmul");
 }
 
 fn buildExample(
