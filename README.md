@@ -264,24 +264,29 @@ For 1024×1024×1024 matmul, three kernels generated from one Zig source
 via comptime specialization:
 
 ​```
-[ 8×8×8 ]   tile=8,  grid=128×128, block=8×8     →  6.57 ms   (327 GFLOPS)
-[16×16×16]  tile=16, grid=64×64,   block=16×16   →  4.28 ms   (502 GFLOPS)
-[32×32×32]  tile=32, grid=32×32,   block=32×32   →  4.12 ms   (521 GFLOPS)
+[ f32   8×8×8 ]   →  6.94 ms   (309 GFLOPS)
+[ f32  16×16×16]  →  3.88 ms   (554 GFLOPS)
+[ f32  32×32×32]  →  3.71 ms   (579 GFLOPS)
+[ f16  16×16×16]  →  3.53 ms   (609 GFLOPS, f32 accumulator)
 ​```
 
-The 32×32 variant hits the 1024 threads/block hardware limit but uses
-each loaded shared-memory element 32 times instead of 16, yielding
-better reuse despite lower per-SM occupancy. The optimal tile depends
-on the hardware (more shared memory per SM → 32 wins decisively; older
-cards → 16 wins). This is exactly why you'd want multiple specialized
-kernels in the first place: ship variants, dispatch by capability.
+The f16 variant uses an f32 accumulator (the standard mixed-precision
+pattern). Comptime selects the entire data path — element type, shared
+memory layout, accumulator type, casting at load/store boundaries — from
+one Zig source. A compile-time `@compileError` rejects degenerate
+combinations like "f32 inputs with f16 accumulator" before any kernel
+gets emitted.
 
-Each kernel is a distinct PTX `.entry` compiled from the same source,
-with tile sizes baked in as immediates and a Zig `@compileError` rejecting
-invalid configs at build time. The same mechanism extends to element
-types (`f32`, `f16`), reduction operators, and accumulator precision —
-the kind of compile-time specialization CUDA C++ templates approximate
-but can't fully express.
+The f16 kernel beats every f32 config on this hardware despite the 1660
+Ti having no tensor cores. The wins are structural: half the shared
+memory per tile, half the bandwidth per load. On hardware with tensor
+cores (RTX 2060+, A100, H100) the gap would be 3-8× larger because
+those cards have dedicated f16 matmul units.
+
+Each of the four kernels is a distinct PTX `.entry` compiled from the
+same source. The CUDA C++ equivalent would be a template specialization,
+but C++ templates can't express this kind of validation logic — Zig's
+`@compileError` runs arbitrary code at compile time.
 
 See [`examples/09_comptime_matmul/`](examples/09_comptime_matmul/).
 
