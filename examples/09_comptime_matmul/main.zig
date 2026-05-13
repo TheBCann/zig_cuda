@@ -23,10 +23,20 @@ pub fn main(init: std.process.Init) !void {
     const module = try cuda.Module.loadData(@embedFile("kernel_ptx"));
     defer module.unload();
 
-    // ── Grab all three specialized entry points ──────────────────────
-    const k_8x8   = try module.getFunction("kernel_$_matmul_f32_8x8");
-    const k_16x16 = try module.getFunction("kernel_$_matmul_f32_16x16");
-    const k_32x32 = try module.getFunction("kernel_$_matmul_f32_32x32");
+    const MatmulArgs = struct {
+        M: u32,
+        N: u32,
+        K: u32,
+        A: cuda.bindings.CUdeviceptr,
+        B: cuda.bindings.CUdeviceptr,
+        C: cuda.bindings.CUdeviceptr,
+    };
+
+    // ── Grab all four specialized entry points ──────────────────────
+    const k_8x8   = try module.getFunction(MatmulArgs, "kernel_$_matmul_f32_8x8");
+    const k_16x16 = try module.getFunction(MatmulArgs, "kernel_$_matmul_f32_16x16");
+    const k_32x32 = try module.getFunction(MatmulArgs, "kernel_$_matmul_f32_32x32");
+    const k_f16   = try module.getFunction(MatmulArgs, "kernel_$_matmul_f16_16x16");
 
     const elements = MATRIX_SIZE * MATRIX_SIZE;
 
@@ -61,8 +71,8 @@ pub fn main(init: std.process.Init) !void {
     // ── Benchmarking configurations ──────────────────────────────────
     const KernelConfig = struct {
         name: []const u8,
-        func: cuda.Function,
-        tile: u32, // square: tile_m == tile_n == tile_k
+        func: cuda.Function(MatmulArgs),
+        tile: u32,
     };
 
     const configs = [_]KernelConfig{
@@ -90,7 +100,14 @@ pub fn main(init: std.process.Init) !void {
         try cfg.func.launch(.{
             .grid = .{ .x = grid_dim, .y = grid_dim },
             .block = .{ .x = cfg.tile, .y = cfg.tile },
-        }, .{ M, N, K, dev_a.ptr, dev_b.ptr, dev_c.ptr });
+        }, .{ 
+            .M = M,
+            .N = N,
+            .K = K,
+            .A = dev_a.ptr,
+            .B = dev_b.ptr,
+            .C = dev_c.ptr
+        });
         try k_end.record(null);
 
         try k_end.synchronize();
@@ -118,8 +135,6 @@ pub fn main(init: std.process.Init) !void {
     // Same algorithm; comptime selects the f16 LLVM lowering. The 1660 Ti
     // has FP16 ALU paths but no tensor cores, so expect ~similar (not 2x)
     // throughput to f32. The win is in halved memory footprint and bandwidth.
-
-    const k_f16 = try module.getFunction("kernel_$_matmul_f16_16x16");
 
     const host_a_f16 = try a.alloc(f16, elements);
     defer a.free(host_a_f16);
@@ -151,7 +166,14 @@ pub fn main(init: std.process.Init) !void {
     try k_f16.launch(.{
         .grid = .{ .x = f16_grid, .y = f16_grid },
         .block = .{ .x = f16_tile, .y = f16_tile },
-    }, .{ M, N, K, dev_a_f16.ptr, dev_b_f16.ptr, dev_c_f16.ptr });
+    }, .{ 
+        .M = M,
+        .N = N,
+        .K = K,
+        .A = dev_a_f16.ptr,
+        .B = dev_b_f16.ptr,
+        .C = dev_c_f16.ptr
+    });
     try k_end.record(null);
     try k_end.synchronize();
     const f16_ms = try cuda.Event.elapsed(k_start, k_end);

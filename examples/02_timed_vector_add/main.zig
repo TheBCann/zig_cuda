@@ -13,9 +13,16 @@ pub fn main(init: std.process.Init) !void {
     const ctx = try cuda.Context.create(dev);
     defer ctx.deinit();
 
+    const VectorAddArgs = struct {
+        n: u32,
+        x: cuda.bindings.CUdeviceptr,
+        y: cuda.bindings.CUdeviceptr,
+        out: cuda.bindings.CUdeviceptr,
+    };
+
     const module = try cuda.Module.loadData(@embedFile("kernel_ptx"));
     defer module.unload();
-    const kernel = try module.getFunction("kernel_$_vector_add");
+    const kernel = try module.getFunction(VectorAddArgs, "kernel_$_vector_add");
 
     const N: u32 = 1 << 20;
     const host_x = try allocator.alloc(f32, N);
@@ -60,10 +67,17 @@ pub fn main(init: std.process.Init) !void {
     try dy.copyFromHost(host_y);
 
     try start.record(null);
+
     try kernel.launch(.{
         .grid = .{ .x = grid },
         .block = .{ .x = block },
-    }, .{ runtime_n, dx.ptr, dy.ptr, dout.ptr });
+    }, .{
+        .n = runtime_n,
+        .x = dx.ptr,
+        .y = dy.ptr,
+        .out = dout.ptr,
+    });
+
     try end.record(null);
 
     try end.synchronize();

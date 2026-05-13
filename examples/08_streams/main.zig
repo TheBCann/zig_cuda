@@ -38,9 +38,18 @@ pub fn main(init: std.process.Init) !void {
     const ctx = try cuda.Context.create(dev);
     defer ctx.deinit();
 
+    // vector_add: 01, 02, 03, 08
+    const VectorAddArgs = struct {
+        n: u32,
+        x: cuda.bindings.CUdeviceptr,
+        y: cuda.bindings.CUdeviceptr,
+        out: cuda.bindings.CUdeviceptr,
+    };
+
     const module = try cuda.Module.loadData(@embedFile("kernel_ptx"));
     defer module.unload();
-    const kernel = try module.getFunction("kernel_$_vector_add");
+    const kernel =
+        try module.getFunction(VectorAddArgs, "kernel_$_vector_add");
 
     // ── Synchronous baseline (pageable memory, default stream) ───────
     // Reuses the same approach as example 03. This is the number we're
@@ -78,10 +87,17 @@ pub fn main(init: std.process.Init) !void {
     try sync_start.record(null);
     try dx.copyFromHost(host_x);
     try dy.copyFromHost(host_y);
+
     try kernel.launch(.{
         .grid = .{ .x = grid },
         .block = .{ .x = block },
-    }, .{ runtime_n, dx.ptr, dy.ptr, dout.ptr });
+    }, .{
+        .n = runtime_n,
+        .x = dx.ptr,
+        .y = dy.ptr,
+        .out = dout.ptr
+    });
+
     try dout.copyToHost(host_out_sync);
     try sync_end.record(null);
     try sync_end.synchronize();
@@ -155,11 +171,18 @@ pub fn main(init: std.process.Init) !void {
             CHUNK * @sizeOf(f32),
             stream.handle,
         ));
+
         try kernel.launch(.{
             .grid = .{ .x = chunk_grid },
             .block = .{ .x = block },
             .stream = stream.handle,
-        }, .{ chunk_n, dx_off, dy_off, dout_off });
+        }, .{ 
+            .n = chunk_n,
+            .x = dx_off,
+            .y = dy_off,
+            .out = dout_off
+        });
+
         try toErr(cuda.bindings.cuMemcpyDtoHAsync_v2(
             out_slice.ptr,
             dout_off,

@@ -125,7 +125,11 @@ pub const Module = struct {
         _ = c.cuModuleUnload(self.handle);
     }
 
-    pub fn getFunction(self: Module, name: [*:0]const u8) CudaError!Function {
+    pub fn getFunction(
+        self: Module,
+        comptime Args: type,
+        name: [*:0]const u8,
+    ) CudaError!Function(Args) {
         var f: c.CUfunction = null;
         try toErr(c.cuModuleGetFunction(&f, self.handle, name));
         return .{ .handle = f };
@@ -252,50 +256,47 @@ pub const LaunchConfig = struct {
     stream: c.CUstream = null,
 };
 
-pub const Function = struct {
-    handle: c.CUfunction,
+/// A handle to a CUDA kernel, typed by its expected argument struct.
+/// The Args struct names and types each kernel parameter; `launch`
+/// type-checks the passed args at compile time.
+pub fn Function(comptime Args: type) type {
+    const ti = @typeInfo(Args);
+    if (ti != .@"struct")
+        @compileError("Function Args must be a struct type, got " ++ @typeName(Args));
 
-    /// Launch the kernel with `args` as a tuple. Each argument is
-    /// materialized on the stack and a pointer-array is built so cuLaunchKernel
-    /// can read each parameter by address (its calling convention).
-    pub fn launch(
-        self: Function,
-        cfg: LaunchConfig,
-        args: anytype,
-    ) CudaError!void {
-        const Args = @TypeOf(args);
-        const fields = @typeInfo(Args).@"struct".fields;
+    return struct {
+        handle: c.CUfunction,
 
-        // 1. Construct a new purely runtime tuple using the new @Tuple builtin
-        comptime var runtime_types: [fields.len]type = undefined;
-        inline for (fields, 0..) |f, i| {
-            runtime_types[i] = f.type;
+        const Self = @This();
+
+        pub fn launch(
+            self: Self,
+            cfg: LaunchConfig,
+            args: Args,
+        ) CudaError!void {
+            const fields = @typeInfo(Args).@"struct".fields;
+
+            // Materialize args in a mutable local so we can take field
+            // addresses for cuLuanchKernel's pointer-array calling convention.
+            var storage = args;
+
+            var ptrs: [fields.len]?*anyopaque = undefined;
+            inline for (fields, 0..) |f, i| {
+                ptrs[i] = @ptrCast(&@field(storage, f.name));
+            }
+
+            try toErr(c.cuLaunchKernel(
+                    self.handle,
+                    cfg.grid.x, cfg.grid.y, cfg.grid.z,
+                    cfg.block.x, cfg.block.y, cfg.block.z,
+                    cfg.shared_mem,
+                    cfg.stream,
+                    &ptrs,
+                    null,
+            ));
         }
-        const RuntimeArgs = @Tuple(&runtime_types);
-
-        // 2. Copy the arguments into our guaranteed-runtime storage
-        var storage: RuntimeArgs = undefined;
-        inline for (fields) |f| {
-            @field(storage, f.name) = @field(args, f.name);
-        }
-
-        // 3. Take addresses safely
-        var ptrs: [fields.len]?*anyopaque = undefined;
-        inline for (fields, 0..) |f, i| {
-            ptrs[i] = @ptrCast(&@field(storage, f.name));
-        }
-
-        try toErr(c.cuLaunchKernel(
-            self.handle,
-            cfg.grid.x, cfg.grid.y, cfg.grid.z,
-            cfg.block.x, cfg.block.y, cfg.block.z,
-            cfg.shared_mem,
-            cfg.stream,
-            &ptrs,
-            null,
-        ));
-    }
-};
+    };
+}
 
 /// CUDA event for timing GPU work. Pair two of them around a kernel
 /// launch and call `elapsed` to get milliseconds between them.

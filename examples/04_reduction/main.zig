@@ -21,9 +21,16 @@ pub fn main(init: std.process.Init) !void {
     const ctx = try cuda.Context.create(dev);
     defer ctx.deinit();
 
+    // block_sum: 04, 06, 07
+    const BlockSumArgs = struct {
+        n: u32,
+        input: cuda.bindings.CUdeviceptr,
+        partials: cuda.bindings.CUdeviceptr,
+    };
+
     const module = try cuda.Module.loadData(@embedFile("kernel_ptx"));
     defer module.unload();
-    const kernel = try module.getFunction("kernel_$_block_sum");
+    const kernel = try module.getFunction(BlockSumArgs, "kernel_$_block_sum");
 
     // ── Input: N ones. Sum should be exactly N. ──────────────────────
     const N: u32 = 1 << 20; // 1M elements
@@ -62,7 +69,12 @@ pub fn main(init: std.process.Init) !void {
     try kernel.launch(.{
         .grid = .{ .x = num_blocks },
         .block = .{ .x = BLOCK_SIZE },
-    }, .{ runtime_n, dev_input.ptr, dev_partials.ptr });
+    }, .{
+        .n = runtime_n,
+        .input = dev_input.ptr,
+        .partials = dev_partials.ptr
+    });
+
     try end.record(null);
     try end.synchronize();
     const kernel_ms = try cuda.Event.elapsed(start, end);

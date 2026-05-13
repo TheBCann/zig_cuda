@@ -17,8 +17,16 @@ pub fn main(init: std.process.Init) !void {
     const module = try cuda.Module.loadData(ptx_data);
     defer module.unload();
 
+    // Host-side argument layout for the vector_add kernel.
+    // Each field corresponds to one kernel parameter in declaration order.
+    const VectorAddArgs = struct {
+        n: u32,
+        x: cuda.bindings.CUdeviceptr,
+        y: cuda.bindings.CUdeviceptr,
+        out: cuda.bindings.CUdeviceptr,
+    };
 
-    const kernel = try module.getFunction("kernel_$_vector_add");
+    const kernel = try module.getFunction(VectorAddArgs, "kernel_$_vector_add");
 
     const N: u32 = 1 << 20;
     const host_x = try a.alloc(f32, N);
@@ -47,12 +55,15 @@ pub fn main(init: std.process.Init) !void {
     const block: c_uint = 256;
     const grid: c_uint = (N + block - 1) / block;
 
-    const runtime_n = N; // Force N into runtime memory
-
     try kernel.launch(.{
         .grid = .{ .x = grid },
         .block = .{ .x = block },
-    }, .{ runtime_n, dx.ptr, dy.ptr, dout.ptr });
+    }, .{
+        .n = N,
+        .x = dx.ptr,
+        .y = dy.ptr,
+        .out = dout.ptr,
+    });
 
     try ctx.synchronize();
 

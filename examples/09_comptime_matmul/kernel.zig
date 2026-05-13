@@ -29,15 +29,20 @@ pub const Config = struct {
     pub fn validate(comptime self: Config) void {
         if (self.tile_m == 0 or self.tile_n == 0 or self.tile_k == 0)
             @compileError("tile dimensions must be > 0");
+
         if (self.tile_m * self.tile_n > 1024)
             @compileError("tile_m * tile_n exceeds 1024 threads/block limit");
+
         if (self.tile_m != self.tile_n or self.tile_n != self.tile_k)
             @compileError("this implementation requires tile_m == tile_n == tile_k " ++
                 "(asymmetric tiles need a different cooperative-load pattern)");
+
         if (self.T != f32 and self.T != f16)
-            @compileError("only f32 and f16 supported for T (passed " ++ @typeName(self.T) ++ ")");
+            @compileError("only f32 and f16 supported for accum (passed " ++ @typeName(self.accum) ++ ")");
+
         if (self.accum != f32 and self.accum != f16)
             @compileError("only f32 and f16 supported for T (passed " ++ @typeName(self.T) ++ ")");
+
         if (self.T == f32 and self.accum == f16)
             @compileError("accumulating to f16 with f32 inputs loses precision; use accum = f32");
     }
@@ -126,7 +131,13 @@ pub fn matmul_f32_8x8(
     B: [*]addrspace(.global) const f32,
     C: [*]addrspace(.global) f32,
 ) callconv(.kernel) void {
-    matmulBody(.{ .T = f32, .tile_m = 8, .tile_n = 8, .tile_k = 8 }, M, N, K, A, B, C);
+    matmulBody(.{
+        .T = f32,
+        .tile_m = 8,
+        .tile_n = 8,
+        .tile_k = 8 },
+        M, N, K, A, B, C
+    );
 }
 
 pub fn matmul_f32_16x16(
@@ -135,7 +146,13 @@ pub fn matmul_f32_16x16(
     B: [*]addrspace(.global) const f32,
     C: [*]addrspace(.global) f32,
 ) callconv(.kernel) void {
-    matmulBody(.{ .T = f32, .tile_m = 16, .tile_n = 16, .tile_k = 16 }, M, N, K, A, B, C);
+    matmulBody(.{
+        .T = f32,
+        .tile_m = 16,
+        .tile_n = 16,
+        .tile_k = 16 },
+        M, N, K, A, B, C
+    );
 }
 
 pub fn matmul_f32_32x32(
@@ -144,7 +161,13 @@ pub fn matmul_f32_32x32(
     B: [*]addrspace(.global) const f32,
     C: [*]addrspace(.global) f32,
 ) callconv(.kernel) void {
-    matmulBody(.{ .T = f32, .tile_m = 32, .tile_n = 32, .tile_k = 32 }, M, N, K, A, B, C);
+    matmulBody(.{
+        .T = f32,
+        .tile_m = 32,
+        .tile_n = 32,
+        .tile_k = 32 },
+        M, N, K, A, B, C
+    );
 }
 
 /// f16 inputs/outputs with f32 accumulator — the standard mixed-precision
@@ -157,7 +180,13 @@ pub fn matmul_f16_16x16(
     B: [*]addrspace(.global) const f16,
     C: [*]addrspace(.global) f16,
 ) callconv(.kernel) void {
-    matmulBody(.{ .T = f16, .tile_m = 16, .tile_n = 16, .tile_k = 16 }, M, N, K, A, B, C);
+    matmulBody(.{
+        .T = f16,
+        .tile_m = 16,
+        .tile_n = 16,
+        .tile_k = 16 },
+        M, N, K, A, B, C
+    );
 }
 
 // Runtime-parameterized to keep the optimizer from proving any pointer

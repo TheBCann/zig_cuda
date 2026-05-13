@@ -29,9 +29,19 @@ pub fn main(init: std.process.Init) !void {
     const ctx = try cuda.Context.create(dev);
     defer ctx.deinit();
 
+    // matmul: 05, 09
+    const MatmulArgs = struct {
+        M: u32,
+        N: u32,
+        K: u32,
+        A: cuda.bindings.CUdeviceptr,
+        B: cuda.bindings.CUdeviceptr,
+        C: cuda.bindings.CUdeviceptr,
+    };
+
     const module = try cuda.Module.loadData(@embedFile("kernel_ptx"));
     defer module.unload();
-    const kernel = try module.getFunction("kernel_$_matmul");
+    const kernel = try module.getFunction(MatmulArgs, "kernel_$_matmul");
 
     const elements: u32 = N * N;
 
@@ -93,10 +103,19 @@ pub fn main(init: std.process.Init) !void {
     const N_arg: u32 = N;
 
     try k_start.record(null);
+
     try kernel.launch(.{
         .grid = .{ .x = grid_dim, .y = grid_dim },
         .block = .{ .x = TILE, .y = TILE },
-    }, .{ M, N_arg, K, dev_a.ptr, dev_b.ptr, dev_c.ptr });
+    }, .{ 
+        .M = M,
+        .N = N_arg,
+        .K = K,
+        .A = dev_a.ptr,
+        .B = dev_b.ptr,
+        .C = dev_c.ptr
+    });
+
     try k_end.record(null);
     try k_end.synchronize();
     const kernel_only_ms = try cuda.Event.elapsed(k_start, k_end);
@@ -112,10 +131,19 @@ pub fn main(init: std.process.Init) !void {
     try e_start.record(null);
     try dev_a.copyFromHost(host_a);
     try dev_b.copyFromHost(host_b);
+
     try kernel.launch(.{
         .grid = .{ .x = grid_dim, .y = grid_dim },
         .block = .{ .x = TILE, .y = TILE },
-    }, .{ M, N_arg, K, dev_a.ptr, dev_b.ptr, dev_c.ptr });
+    }, .{ 
+        .M = M,
+        .N = N_arg,
+        .K = K,
+        .A = dev_a.ptr,
+        .B = dev_b.ptr,
+        .C = dev_c.ptr
+    });
+
     try dev_c.copyToHost(host_c);
     try e_end.record(null);
     try e_end.synchronize();
