@@ -113,4 +113,64 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("  Time:   {d:.3} ms\n", .{ms});
         std.debug.print("  Speed:  {d:.2} GFLOPS\n\n", .{gflops});
     }
+
+    // ── Bonus: f16 16x16 (mixed precision, f32 accumulator) ───────────
+    // Same algorithm; comptime selects the f16 LLVM lowering. The 1660 Ti
+    // has FP16 ALU paths but no tensor cores, so expect ~similar (not 2x)
+    // throughput to f32. The win is in halved memory footprint and bandwidth.
+
+    const k_f16 = try module.getFunction("kernel_$_matmul_f16_16x16");
+
+    const host_a_f16 = try a.alloc(f16, elements);
+    defer a.free(host_a_f16);
+    const host_b_f16 = try a.alloc(f16, elements);
+    defer a.free(host_b_f16);
+    const host_c_f16 = try a.alloc(f16, elements);
+    defer a.free(host_c_f16);
+
+    @memset(host_a_f16, 1.0);
+    @memset(host_b_f16, 1.0);
+    @memset(host_c_f16, 0.0);
+
+    const FBuf = cuda.DeviceBuffer(f16);
+    const dev_a_f16 = try FBuf.alloc(elements);
+    defer dev_a_f16.free();
+    const dev_b_f16 = try FBuf.alloc(elements);
+    defer dev_b_f16.free();
+    const dev_c_f16 = try FBuf.alloc(elements);
+    defer dev_c_f16.free();
+
+    try dev_a_f16.copyFromHost(host_a_f16);
+    try dev_b_f16.copyFromHost(host_b_f16);
+    try dev_c_f16.copyFromHost(host_c_f16);
+
+    const f16_tile: u32 = 16;
+    const f16_grid: u32 = (N + f16_tile - 1) / f16_tile;
+
+    try k_start.record(null);
+    try k_f16.launch(.{
+        .grid = .{ .x = f16_grid, .y = f16_grid },
+        .block = .{ .x = f16_tile, .y = f16_tile },
+    }, .{ M, N, K, dev_a_f16.ptr, dev_b_f16.ptr, dev_c_f16.ptr });
+    try k_end.record(null);
+    try k_end.synchronize();
+    const f16_ms = try cuda.Event.elapsed(k_start, k_end);
+
+    try dev_c_f16.copyToHost(host_c_f16);
+
+    const expected_f16: f16 = @floatCast(expected);
+    var f16_max_err: f32 = 0;
+    for (host_c_f16) |c| {
+        const e: f32 = @abs(@as(f32, c) - @as(f32, expected_f16));
+        if (e > f16_max_err) f16_max_err = e;
+    }
+
+    const f16_flops: f64 = 2.0 * @as(f64, M) * @as(f64, N) * @as(f64, K);
+    const f16_gflops = f16_flops / (@as(f64, f16_ms) * 1.0e6);
+
+    std.debug.print("[f16 16x16x16 (acc=f32)]\n", .{});
+    std.debug.print("  Grid: {d}x{d}, Block: {d}x{d}\n", .{ f16_grid, f16_grid, f16_tile, f16_tile });
+    std.debug.print("  Error:  {d}\n", .{f16_max_err});
+    std.debug.print("  Time:   {d:.3} ms\n", .{f16_ms});
+    std.debug.print("  Speed:  {d:.2} GFLOPS\n\n", .{f16_gflops});
 }
