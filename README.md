@@ -20,16 +20,18 @@ Working on:
 ## Building
 
 ```sh
-zig build                                                  # build everything
-zig build run-01_vector_add                                # minimal launch
-zig build run-02_timed_vector_add                          # kernel-only timing
-zig build run-03_pcie_truth        -Doptimize=ReleaseSafe  # honest end-to-end timing
-zig build run-04_reduction         -Doptimize=ReleaseSafe  # reduction v1 (tree)
-zig build run-05_matmul            -Doptimize=ReleaseSafe  # tiled matmul
-zig build run-06_reduction_v2      -Doptimize=ReleaseSafe  # reduction v2 (halve threads)
-zig build run-07_reduction_v3      -Doptimize=ReleaseSafe  # reduction v3 (warp shuffles)
-zig build run-08_streams           -Doptimize=ReleaseSafe  # pinned + async streams
-zig build run-09_comptime_matmul   -Doptimize=ReleaseSafe  # 4 PTX kernels from one source
+zig build                                                       # build everything
+zig build run-01_vector_add                                     # minimal launch
+zig build run-02_timed_vector_add                               # kernel-only timing
+zig build run-03_pcie_truth             -Doptimize=ReleaseSafe  # honest end-to-end timing
+zig build run-04_reduction              -Doptimize=ReleaseSafe  # reduction v1 (tree)
+zig build run-05_matmul                 -Doptimize=ReleaseSafe  # tiled matmul
+zig build run-06_reduction_v2           -Doptimize=ReleaseSafe  # reduction v2 (halve threads)
+zig build run-07_reduction_v3           -Doptimize=ReleaseSafe  # reduction v3 (warp shuffles)
+zig build run-08_streams                -Doptimize=ReleaseSafe  # pinned + async streams
+zig build run-09_comptime_matmul        -Doptimize=ReleaseSafe  # 4 PTX kernels from one source
+zig build run-10_vectorized_matmul      -Doptimize=ReleaseSafe  # ld.global.v2.f32 cooperative loads
+zig build run-11_register_blocked_matmul -Doptimize=ReleaseSafe # 4x4 register tile per thread (1.5 TFLOPS)
 ```
 
 Expected output for the first example:
@@ -42,21 +44,23 @@ N=1048576  max error = 0
 ## Project layout
 
 ```
-build.zig                # cross-compiles host + PTX, embeds PTX into host
+build.zig                          # cross-compiles host + PTX, embeds PTX into host
 src/
-  root.zig               # public API (re-exports from cuda.zig + bindings.zig)
-  bindings.zig           # raw `extern "cuda"` declarations
-  cuda.zig               # idiomatic Zig wrappers (Device, Context, Module, ...)
+  root.zig                         # public API (re-exports from cuda.zig + bindings.zig)
+  bindings.zig                     # raw `extern "cuda"` declarations
+  cuda.zig                         # idiomatic Zig wrappers (Device, Context, Module, ...)
 examples/
-  01_vector_add/         # minimal launch + correctness check
-  02_timed_vector_add/   # kernel-only timing via CUDA events
-  03_pcie_truth/         # honest end-to-end timing (PCIe overhead exposed)
-  04_reduction/          # shared-memory tree reduction (sum) — baseline
-  05_matmul/             # tiled 2D matrix multiply (the GPU-shines example)
-  06_reduction_v2/       # halve threads, double loads at boundary (1.7× faster)
-  07_reduction_v3/       # warp-shuffle reduction (1.7× faster again, 2.7× over v1)
-  08_streams/            # pinned host memory + 2-stream pipelining (1.78× speedup)
-  09_comptime_matmul/    # 4 specialized kernels (f32×3, f16×1) from one source
+  01_vector_add/                   # minimal launch + correctness check
+  02_timed_vector_add/             # kernel-only timing via CUDA events
+  03_pcie_truth/                   # honest end-to-end timing (PCIe overhead exposed)
+  04_reduction/                    # shared-memory tree reduction (sum) — baseline
+  05_matmul/                       # tiled 2D matrix multiply (the GPU-shines example)
+  06_reduction_v2/                 # halve threads, double loads at boundary (1.7× faster)
+  07_reduction_v3/                 # warp-shuffle reduction (1.7× faster again, 2.7× over v1)
+  08_streams/                      # pinned host memory + 2-stream pipelining (1.78× speedup)
+  09_comptime_matmul/              # 4 specialized kernels (f32×3, f16×1) from one source
+  10_vectorized_matmul/            # ld.global.v2.f32 cooperative loads (compute-bound finding)
+  11_register_blocked_matmul/      # 4×4 register tile per thread (1.5 TFLOPS, 2.7× over simple tiled)
 ```
 
 ## Workarounds
@@ -168,7 +172,7 @@ To verify the name on your build, run:
 
 ```sh
 zig build
-grep '\.entry' zig-out/bin/kernel.ptx
+find .zig-cache -name '*_kernel.s' -exec grep '\.entry' {} \;
 ```
 
 ## Architecture notes
@@ -220,6 +224,13 @@ cross-contaminating.
 `cuda.Module.loadData(@embedFile("kernel_ptx"))`, where the embed is
 wired up in `build.zig` via `addAnonymousImport`. The single executable
 contains the PTX bytes inline. No filesystem dependency at runtime.
+
+**Inline PTX for instructions LLVM doesn't expose.** Some PTX
+instructions (vectorized loads `ld.global.v2.f32`, warp shuffles
+`shfl.sync.down.b32`, the block barrier `bar.sync`) aren't directly
+generated by LLVM from normal Zig code. Examples 07, 10 use Zig's
+inline asm syntax with NVPTX constraint letters (`r` for 32-bit
+registers, `l` for 64-bit pointers) to drop down to PTX where needed.
 
 ## Performance
 
@@ -346,26 +357,79 @@ compile time.
 
 See `examples/09_comptime_matmul/`.
 
+### Register-blocked matmul: the technique that actually matters
+
+Two more matmul experiments past comptime specialization, with one
+clear winner.
+
+**Example 10 — vectorized cooperative loads.** Replace per-element
+scalar loads with `ld.global.v2.f32` inline PTX to load two f32s per
+instruction. Doubled K-direction tile (16 → 32) to absorb the wider
+loads. Result: 561 GFLOPS — essentially identical to the baseline.
+
+The kernel was already compute-bound, not memory-bound. Counting the
+inner-loop work: per K-tile iteration, each thread does 32 FMAs vs
+only ~3 memory ops. Halving the memory ops (which were already a small
+minority of the work) barely moved the needle. **Vectorized loads
+don't help without arithmetic intensity to expose the underlying
+bandwidth ceiling.**
+
+**Example 11 — register-blocked matmul.** Each thread now computes a
+4×4 tile of C in registers instead of one element. Inner loop: 8
+shared-memory loads + 16 FMAs per K iteration (vs 2 loads + 1 FMA in
+the simple version). Loads-per-FMA ratio drops from 2.0 to 0.5 — the
+GPU's FMA units actually run near peak throughput.
+
+Plus: `@mulAdd(f32, ...)` forces emission of `fma.rn.f32` instead of
+the compiler's default `mul.rn.f32` + `add.rn.f32` (one rounding step
+instead of two, one cycle instead of two).
+
+```
+[ Simple tiled 16×16          ]  →  3.85 ms   (554 GFLOPS)
+[ Comptime 32×32              ]  →  3.71 ms   (579 GFLOPS)
+[ Vectorized v2 loads         ]  →  3.83 ms   (561 GFLOPS)
+[ Register-blocked 4×4 + FMA  ]  →  1.43 ms   (1495 GFLOPS)
+```
+
+**2.7× speedup** from a single technique. The kernel is now within
+~1.5–2× of cuBLAS on the same hardware. Remaining gap closeable with
+double-buffered shared memory, vectorized cooperative loads at the
+right scale, and larger thread tiles (8×8) — each closing maybe
+15–20% more. Tensor cores would change the picture entirely but the
+1660 Ti has none.
+
+The progression as a whole — 554 → 579 → 561 → 1495 GFLOPS across
+examples 05, 09, 10, 11 — is the real lesson. Most kernel
+optimizations don't help much. One technique you understand deeply
+makes a huge difference.
+
+See `examples/10_vectorized_matmul/` and
+`examples/11_register_blocked_matmul/`.
+
 ## What's next
 
 The bindings cover ~30 functions now, including async transfers,
 pinned memory, streams, and events — enough for production-grade
 kernel scheduling on a single GPU. Kernel launches are type-checked at
 compile time via `Function(Args)` and user-defined argument structs.
+Matmul sits at ~1.5 TFLOPS f32, within ~1.5-2× of cuBLAS on the same
+hardware.
 
 Coming next:
 
+- **Attention forward pass.** Vanilla scaled-dot-product attention is
+  ~50 lines of kernel code (matmul + softmax + matmul) and produces a
+  real LLM inference primitive. The next-most-valuable kernel to add.
+- **FlashAttention v1.** Once vanilla attention works, FlashAttention's
+  online softmax + tiled-in-shared-memory design is the natural
+  follow-on. Same operation, dramatically less memory traffic.
+- **Closing the matmul gap to cuBLAS.** Double-buffered shared memory
+  (load tile N+1 while computing on N), 8×8 thread tiles (more compute
+  per memory load), and vectorized cooperative loads at the right
+  scale. Each ~10-20% gain, cumulatively maybe another 1.5×.
 - **Multi-GPU support** (`cuCtxSetCurrent`, peer-to-peer transfers).
   The bindings already cover `cuCtxSetCurrent`; no example exercises
   it yet.
-- **A more substantive kernel: attention.** The unfused vanilla
-  attention forward pass is ~50 lines of kernel code and produces a
-  real LLM inference primitive. Distinct enough from matmul to
-  exercise different parts of the API surface (broadcast, softmax
-  along an axis, masking).
-- **Vectorized loads** (`ld.global.v4.f32`). Loading 4 floats per
-  instruction rather than 1 should push matmul toward ~1 TFLOPS on the
-  1660 Ti.
 
 ## License
 
