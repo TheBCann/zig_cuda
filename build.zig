@@ -134,6 +134,9 @@ pub fn build(b: *std.Build) void {
         "10_vectorized_matmul",
         "11_register_blocked_matmul",
         "12_softmax",
+        "13_attention_scores",
+        "14_attention_output",
+        "15_attention_forward"
     };
 
     for (examples) |name| {
