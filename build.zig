@@ -46,7 +46,7 @@ pub fn addKernel(b: *std.Build, opts: KernelOptions) *std.Build.Step.Compile {
     const target = b.resolveTargetQuery(.{
         .cpu_arch = .nvptx64,
         .os_tag = .cuda,
-        .cpu_features_add = std.Target.nvptx.featureSet(&.{smToFeature(opts.sm)}),
+        .cpu_model = .{ .explicit = smToCpu(opts.sm) },
     });
 
     const obj = b.addObject(.{
@@ -62,6 +62,8 @@ pub fn addKernel(b: *std.Build, opts: KernelOptions) *std.Build.Step.Compile {
 
     return obj;
 }
+
+
 
 pub const LinkOptions = struct {
     /// Path to the CUDA installation. If null, defaults to /opt/cuda
@@ -131,6 +133,7 @@ pub fn build(b: *std.Build) void {
         "09_comptime_matmul",
         "10_vectorized_matmul",
         "11_register_blocked_matmul",
+        "12_softmax",
     };
 
     for (examples) |name| {
@@ -193,20 +196,19 @@ fn buildExample(b: *std.Build, opts: ExampleBuildOpts) void {
 }
 
 // ─── Internal: SmArch → std.Target.nvptx.Feature mapping ────────────────
-
-fn smToFeature(sm: SmArch) std.Target.nvptx.Feature {
+fn smToCpu(sm: SmArch) *const std.Target.Cpu.Model {
     return switch (sm) {
-        .sm_60 => .sm_60,
-        .sm_61 => .sm_61,
-        .sm_62 => .sm_62,
-        .sm_70 => .sm_70,
-        .sm_72 => .sm_72,
-        .sm_75 => .sm_75,
-        .sm_80 => .sm_80,
-        .sm_86 => .sm_86,
-        .sm_87 => .sm_87,
-        .sm_89 => .sm_89,
-        .sm_90 => .sm_90,
-        .sm_90a => .sm_90a,
+        .sm_60 => &std.Target.nvptx.cpu.sm_60,
+        .sm_61 => &std.Target.nvptx.cpu.sm_61,
+        .sm_62 => &std.Target.nvptx.cpu.sm_62,
+        .sm_70 => &std.Target.nvptx.cpu.sm_70,
+        .sm_72 => &std.Target.nvptx.cpu.sm_72,
+        .sm_75 => &std.Target.nvptx.cpu.sm_75,
+        .sm_80 => &std.Target.nvptx.cpu.sm_80,
+        .sm_86 => &std.Target.nvptx.cpu.sm_86,
+        .sm_87 => &std.Target.nvptx.cpu.sm_87,
+        .sm_89 => &std.Target.nvptx.cpu.sm_89,
+        .sm_90 => &std.Target.nvptx.cpu.sm_90,
+        .sm_90a => &std.Target.nvptx.cpu.sm_90a,
     };
 }
