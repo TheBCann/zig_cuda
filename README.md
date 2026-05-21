@@ -17,6 +17,79 @@ Working on:
 - Arch Linux, kernel 6.19, NVIDIA driver via `nvidia-dkms`
 - GTX 1660 Ti (Turing, sm_75)
 
+## Using as a dependency
+
+Add zig_cuda to your project:
+
+```sh
+zig fetch --save=cuda git+https://github.com/TheBCann/zig_cuda
+```
+
+In your `build.zig`:
+
+```zig
+const std = @import("std");
+const cuda = @import("cuda"); // imports zig_cuda's build.zig
+
+pub fn build(b: *std.Build) void {
+    const host_target = b.standardTargetOptions(.{
+        .default_target = .{
+            .os_tag = .linux,
+            .abi = .gnu,
+            .glibc_version = .{ .major = 2, .minor = 38, .patch = 0 },
+        },
+    });
+    const optimize = b.standardOptimizeOption(.{});
+    const cuda_path = b.option([]const u8, "cuda-path", "Path to CUDA installation");
+
+    const cuda_dep = b.dependency("cuda", .{
+        .target = host_target,
+        .optimize = optimize,
+    });
+
+    // Compile your Zig kernel to PTX.
+    const kernel = cuda.addKernel(b, .{
+        .name = "kernel",
+        .source = b.path("src/kernel.zig"),
+        .sm = .sm_75, // your GPU's compute capability
+    });
+
+    const exe = b.addExecutable(.{
+        .name = "my_gpu_app",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = host_target,
+            .optimize = optimize,
+        }),
+    });
+
+    // Wire up the runtime cuda module + embedded PTX.
+    exe.root_module.addImport("cuda", cuda_dep.module("cuda"));
+    exe.root_module.addAnonymousImport("kernel_ptx", .{
+        .root_source_file = kernel.getEmittedAsm(),
+    });
+
+    cuda.linkCuda(exe, .{ .cuda_path = cuda_path });
+
+    b.installArtifact(exe);
+}
+```
+
+Your kernel and host code follow the patterns shown in `examples/01_vector_add/`.
+
+**Note on the dual `"cuda"` name.** `@import("cuda")` at the top of `build.zig`
+imports zig_cuda's build.zig as a namespace (giving you `addKernel`, `linkCuda`,
+`SmArch`). The same name `"cuda"` later appears in
+`cuda_dep.module("cuda")` — that's wiring up the **runtime** module
+(`src/root.zig`) for your main.zig to `@import("cuda")` at runtime. Two
+different things named "cuda" depending on context.
+
+**Default CUDA path** is `/opt/cuda` (Arch Linux). On other distros pass
+`-Dcuda-path=/usr/local/cuda` or whatever your installation directory is.
+
+**Supported SM architectures**: sm_60 through sm_90a, covering Pascal,
+Volta, Turing, Ampere, Ada, and Hopper. Match the constant to your GPU.
+
 ## Building
 
 ```sh
