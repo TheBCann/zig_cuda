@@ -274,15 +274,15 @@ pub fn Function(comptime Args: type) type {
             cfg: LaunchConfig,
             args: Args,
         ) CudaError!void {
-            const fields = @typeInfo(Args).@"struct".fields;
+            const field_names = @typeInfo(Args).@"struct".field_names;
 
             // Materialize args in a mutable local so we can take field
             // addresses for cuLuanchKernel's pointer-array calling convention.
             var storage = args;
 
-            var ptrs: [fields.len]?*anyopaque = undefined;
-            inline for (fields, 0..) |f, i| {
-                ptrs[i] = @ptrCast(&@field(storage, f.name));
+            var ptrs: [field_names.len]?*anyopaque = undefined;
+            inline for (field_names, 0..) |name, i| {
+                ptrs[i] = @ptrCast(&@field(storage, name));
             }
 
             try toErr(c.cuLaunchKernel(
