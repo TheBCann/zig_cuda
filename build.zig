@@ -75,14 +75,14 @@ pub const LinkOptions = struct {
 };
 
 /// Configure an executable to link against libcuda (the CUDA Driver API).
-/// Adds the include path, library path (stubs/), system library, and
-/// libc dependency.
+/// Adds the stubs library path, the system library, and a libc
+/// dependency. No include path: the bindings are hand-written extern
+/// declarations, so no C headers are ever compiled.
 pub fn linkCuda(exe: *std.Build.Step.Compile, opts: LinkOptions) void {
     const b = exe.step.owner;
     const cuda_path = opts.cuda_path orelse "/opt/cuda";
 
     exe.root_module.linkSystemLibrary("cuda", .{});
-    exe.root_module.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{cuda_path}) });
     exe.root_module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/lib/stubs", .{cuda_path}) });
     exe.root_module.link_libc = true;
 }

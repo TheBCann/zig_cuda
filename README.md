@@ -3,8 +3,11 @@
 Pure-Zig bindings for the NVIDIA CUDA Driver API, plus working examples
 that compile Zig kernels to PTX and launch them on the GPU.
 
-No `@cImport`. No CUDA toolkit dependency at build time. Only
-`libcuda.so` (which ships with the NVIDIA driver) is needed at runtime.
+No `@cImport`. No CUDA SDK headers needed — the bindings are
+hand-written `extern "cuda"` declarations. At link time the build
+resolves `libcuda.so` against the CUDA toolkit's `lib/stubs` directory
+by default (override with `-Dcuda-path`); at runtime only the real
+`libcuda.so` (which ships with the NVIDIA driver) is needed.
 The PTX kernels are compiled by Zig's NVPTX backend and embedded into
 the host binary via `@embedFile`, so each example produces a single
 self-contained executable.
@@ -13,8 +16,9 @@ self-contained executable.
 
 Working on:
 
-- Zig 0.17.0-dev.304+9787df942 (nightly)
-- Arch Linux, kernel 6.19, NVIDIA driver via `nvidia-dkms`
+- Zig 0.17.0-dev.1460+9a9d8adda (nightly; older nightlies before the
+  `@typeInfo` field_names/field_types rework will not compile)
+- Arch Linux, kernel 7.1, NVIDIA driver via `nvidia-dkms`
 - GTX 1660 Ti (Turing, sm_75)
 
 ## Using as a dependency
@@ -147,7 +151,7 @@ examples/
 ## Workarounds
 
 This project is bleeding-edge and currently relies on five distinct
-workarounds for issues at the intersection of Zig nightly, LLVM 19's
+workarounds for issues at the intersection of Zig nightly, LLVM's
 NVPTX backend, and modern Linux toolchains. All five must be in place
 simultaneously for the build to succeed and the kernel to run. As the
 toolchain matures, each of these should become unnecessary — they are
@@ -262,9 +266,10 @@ find .zig-cache -name '*_kernel.s' -exec grep '\.entry' {} \;
 `src/bindings.zig` are written directly as `pub extern "cuda" fn ...`
 declarations. This makes the project insensitive to the upcoming
 `@cImport`-to-build-system migration in Zig and avoids needing the CUDA
-SDK headers at compile time. Only `libcuda.so` (provided by the NVIDIA
-driver) is needed at link time, and the build system finds it via
-`linkSystemLibrary("cuda", .{})`.
+SDK headers at compile time. Only `libcuda.so` is needed at link time —
+the build system finds it via `linkSystemLibrary("cuda", .{})`,
+resolved against the toolkit's `lib/stubs` directory by default. At
+runtime the dynamic linker picks up the driver's real `libcuda.so`.
 
 **`_v2` ABI symbols.** Driver API functions that handle 64-bit device
 pointers expose `_v2` symbols at the ABI level. The C header `#define`s

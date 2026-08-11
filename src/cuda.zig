@@ -277,7 +277,7 @@ pub fn Function(comptime Args: type) type {
             const field_names = @typeInfo(Args).@"struct".field_names;
 
             // Materialize args in a mutable local so we can take field
-            // addresses for cuLuanchKernel's pointer-array calling convention.
+            // addresses for cuLaunchKernel's pointer-array calling convention.
             var storage = args;
 
             var ptrs: [field_names.len]?*anyopaque = undefined;
