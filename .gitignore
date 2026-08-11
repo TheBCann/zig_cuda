@@ -1,3 +1,6 @@
 zig-out/
 .zig-cache/
 .gdb_history
+.claude/
+bleeding-edge-code-examples/
+bleeding-edge-code-examples.zip
