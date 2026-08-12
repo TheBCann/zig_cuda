@@ -129,6 +129,7 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("  Error:  {d}\n", .{max_err});
         std.debug.print("  Time:   {d:.3} ms\n", .{ms});
         std.debug.print("  Speed:  {d:.2} GFLOPS\n\n", .{gflops});
+        if (max_err > 0.001) return error.VerificationFailed;
     }
 
     // ── Bonus: f16 16x16 (mixed precision, f32 accumulator) ───────────
@@ -195,4 +196,5 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("  Error:  {d}\n", .{f16_max_err});
     std.debug.print("  Time:   {d:.3} ms\n", .{f16_ms});
     std.debug.print("  Speed:  {d:.2} GFLOPS\n\n", .{f16_gflops});
+    if (f16_max_err > 0.5) return error.VerificationFailed;
 }

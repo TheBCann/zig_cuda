@@ -98,4 +98,5 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("CPU: {d:.3} ms\n", .{cpu_ms});
     std.debug.print("GPU: {d:.3} ms ({d:.1}x speedup, kernel only)\n", .{ gpu_ms, speedup });
     std.debug.print("Max error: {d}\n", .{max_err});
+    if (max_err > 1e-5) return error.VerificationFailed;
 }

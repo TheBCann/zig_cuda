@@ -139,6 +139,10 @@ pub fn build(b: *std.Build) void {
         "15_attention_forward"
     };
 
+    // `zig build run-all` runs every example; each one exits nonzero if its
+    // GPU result fails verification, so this doubles as the regression suite.
+    const run_all = b.step("run-all", "Run and verify every example (needs a GPU)");
+
     for (examples) |name| {
         buildExample(b, .{
             .host_target = host_target,
@@ -146,6 +150,7 @@ pub fn build(b: *std.Build) void {
             .cuda_module = cuda_module,
             .cuda_path = cuda_path,
             .name = name,
+            .run_all = run_all,
         });
     }
 }
@@ -158,6 +163,7 @@ const ExampleBuildOpts = struct {
     cuda_module: *std.Build.Module,
     cuda_path: ?[]const u8,
     name: []const u8,
+    run_all: *std.Build.Step,
 };
 
 fn buildExample(b: *std.Build, opts: ExampleBuildOpts) void {
@@ -196,6 +202,11 @@ fn buildExample(b: *std.Build, opts: ExampleBuildOpts) void {
         b.fmt("Run the {s} example", .{opts.name}),
     );
     run_step.dependOn(&run_cmd.step);
+
+    // Each example gets its own Run step in run-all so one failure doesn't
+    // hide the rest.
+    const run_all_cmd = b.addRunArtifact(exe);
+    opts.run_all.dependOn(&run_all_cmd.step);
 }
 
 // ─── Internal: SmArch → std.Target.nvptx.Feature mapping ────────────────

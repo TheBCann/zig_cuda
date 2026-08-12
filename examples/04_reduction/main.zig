@@ -97,4 +97,5 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("CPU time:    {d:.3} ms\n", .{cpu_ms});
     std.debug.print("GPU kernel:  {d:.3} ms ({d:.1}x vs CPU)\n", .{ kernel_ms, cpu_ms / kernel_ms });
     std.debug.print("Blocks:      {d} (each summing {d} elements)\n", .{ num_blocks, BLOCK_SIZE });
+    if (gpu_err > 0.5) return error.VerificationFailed;
 }

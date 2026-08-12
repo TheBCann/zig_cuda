@@ -220,6 +220,7 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("Sync baseline (pageable, default stream):  {d:.3} ms ({d:.1} GB/s effective)\n", .{ sync_ms, sync_gbps });
     std.debug.print("Streamed (pinned, {d} streams, {d} chunks): {d:.3} ms ({d:.1} GB/s effective)\n", .{ NUM_STREAMS, K, stream_ms, stream_gbps });
     std.debug.print("Speedup: {d:.2}x\n", .{speedup});
+    if (sync_max_err > 1e-5 or stream_max_err > 1e-5) return error.VerificationFailed;
 }
 
 // Small helper to call raw bindings without importing the whole error mapping.
