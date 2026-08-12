@@ -175,4 +175,5 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("CPU naive triple loop: {d:.1} ms  ({d:.2} GFLOPS)\n", .{ cpu_ms, cpu_gflops });
     std.debug.print("GPU kernel only:       {d:.3} ms  ({d:.2} GFLOPS, {d:.0}x vs CPU)\n", .{ kernel_only_ms, gpu_gflops, cpu_ms / kernel_only_ms });
     std.debug.print("GPU end-to-end:        {d:.3} ms  ({d:.0}x vs CPU)\n", .{ end_to_end_ms, cpu_ms / end_to_end_ms });
+    if (first_bad != null) return error.VerificationFailed;
 }

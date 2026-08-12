@@ -1,0 +1,57 @@
+# Compile-only CI: catches nightly-Zig API drift (the common breakage) on a
+# GPU-less runner. Linking normally needs the CUDA toolkit's stub libcuda.so,
+# so we generate a stub from the exact symbol list in src/bindings.zig — if a
+# binding is added, the stub picks it up automatically.
+#
+# What this does NOT cover: actually running kernels. `zig build run-all` on
+# real hardware remains the correctness suite.
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1" # weekly: catch nightly drift even when the repo is idle
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig nightly (master)
+        uses: mlugg/setup-zig@v2
+        with:
+          version: master
+
+      - name: Generate stub libcuda.so from bindings.zig
+        run: |
+          mkdir -p .ci-cuda/lib/stubs
+          grep -oP 'extern "cuda" fn \K\w+' src/bindings.zig \
+            | sed 's/.*/void &(void) {}/' > .ci-cuda/stub.c
+          echo "stubbed $(wc -l < .ci-cuda/stub.c) driver symbols"
+          zig cc -shared -fPIC -Wl,-soname,libcuda.so.1 \
+            -o .ci-cuda/lib/stubs/libcuda.so .ci-cuda/stub.c
+
+      - name: Build everything (host x86_64 + all PTX kernels)
+        run: zig build -Dcuda-path="$PWD/.ci-cuda"
+
+      - name: Verify PTX emission (every kernel has a .entry)
+        run: |
+          files=$(find .zig-cache -name '*_kernel.s' | sort -u)
+          # Count unique kernel names, not files — a reused cache may hold
+          # several object variants of the same kernel.
+          count=$(find .zig-cache -name '*_kernel.s' -printf '%f\n' | sort -u | wc -l)
+          echo "found $count distinct PTX kernels"
+          test "$count" -eq 15
+          bad=0
+          for f in $files; do
+            if ! grep -q '\.entry' "$f"; then
+              echo "MISSING .entry in $f (kernel was dead-code-eliminated?)"
+              bad=1
+            fi
+          done
+          grep -h '\.entry' $files | sed 's/^[[:space:]]*//' | sort -u
+          exit $bad

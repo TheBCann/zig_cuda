@@ -98,6 +98,7 @@ Volta, Turing, Ampere, Ada, and Hopper. Match the constant to your GPU.
 
 ```sh
 zig build                                                       # build everything
+zig build run-all                                               # run + verify all 15 (each exits nonzero on bad results)
 zig build run-01_vector_add                                     # minimal launch
 zig build run-02_timed_vector_add                               # kernel-only timing
 zig build run-03_pcie_truth              -Doptimize=ReleaseSafe # honest end-to-end timing

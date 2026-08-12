@@ -220,6 +220,7 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("GPU attention:  {d:.3} ms  ({d:.1}x vs CPU)\n", .{
         total_ms, cpu_ms / total_ms,
     });
+    if (first_bad != null) return error.VerificationFailed;
 }
 
 /// CPU reference: full attention forward pass.

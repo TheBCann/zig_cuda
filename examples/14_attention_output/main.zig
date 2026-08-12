@@ -163,6 +163,7 @@ pub fn main(init: std.process.Init) !void {
     } else {
         std.debug.print("  No mismatches above 1e-3 threshold.\n", .{});
     }
+    if (first_bad != null) return error.VerificationFailed;
 
     // Sanity print: show the corner 3x3 of the output.
     std.debug.print("\nSample output[0..3, 0..3]:\n", .{});

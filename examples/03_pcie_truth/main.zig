@@ -152,4 +152,5 @@ pub fn main(init: std.process.Init) !void {
         transfer_ms,
         100.0 * transfer_ms / end_to_end_ms,
     });
+    if (max_err > 1e-5) return error.VerificationFailed;
 }

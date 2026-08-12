@@ -75,4 +75,5 @@ pub fn main(init: std.process.Init) !void {
         if (e > max_err) max_err = e;
     }
     std.debug.print("N={d}  max error = {d}\n", .{ N, max_err });
+    if (max_err > 1e-5) return error.VerificationFailed;
 }
