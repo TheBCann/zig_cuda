@@ -51,11 +51,11 @@ pub fn main(init: std.process.Init) !void {
     };
 
     // One PTX module, three function handles.
-    const module = try cuda.Module.loadData(@embedFile("kernel_ptx"));
+    const module = try cuda.Module.loadPtx(@embedFile("kernel_ptx"));
     defer module.unload();
-    const scores_kernel = try module.getFunction(ScoresArgs, "kernel_$_scores_f32_16");
-    const softmax_kernel = try module.getFunction(SoftmaxArgs, "kernel_$_softmax_f32_256");
-    const output_kernel = try module.getFunction(OutputArgs, "kernel_$_output_f32_16");
+    const scores_kernel = try module.getFunction(ScoresArgs, "scores_f32_16");
+    const softmax_kernel = try module.getFunction(SoftmaxArgs, "softmax_f32_256");
+    const output_kernel = try module.getFunction(OutputArgs, "output_f32_16");
 
     const qkv_elements: u32 = N * D;
     const scores_elements: u32 = N * N;

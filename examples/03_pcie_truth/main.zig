@@ -37,9 +37,9 @@ pub fn main(init: std.process.Init) !void {
         out: cuda.bindings.CUdeviceptr,
     };
 
-    const module = try cuda.Module.loadData(@embedFile("kernel_ptx"));
+    const module = try cuda.Module.loadPtx(@embedFile("kernel_ptx"));
     defer module.unload();
-    const kernel = try module.getFunction(VectorAddArgs, "kernel_$_vector_add");
+    const kernel = try module.getFunction(VectorAddArgs, "vector_add");
 
     const N: u32 = 1 << 24; // 16M elements; 64 MB per buffer
     const host_x = try a.alloc(f32, N);
@@ -92,12 +92,7 @@ pub fn main(init: std.process.Init) !void {
     try kernel.launch(.{
         .grid = .{ .x = grid },
         .block = .{ .x = block },
-    }, .{ 
-        .n = runtime_n,
-        .x = dx.ptr,
-        .y = dy.ptr,
-        .out = dout.ptr
-    });
+    }, .{ .n = runtime_n, .x = dx.ptr, .y = dy.ptr, .out = dout.ptr });
 
     try k_end.record(null);
 
@@ -125,12 +120,7 @@ pub fn main(init: std.process.Init) !void {
     try kernel.launch(.{
         .grid = .{ .x = grid },
         .block = .{ .x = block },
-    }, .{ 
-        .n = runtime_n,
-        .x = dx.ptr,
-        .y = dy.ptr,
-        .out = dout.ptr
-    });
+    }, .{ .n = runtime_n, .x = dx.ptr, .y = dy.ptr, .out = dout.ptr });
     try dout.copyToHost(host_out);
     try e_end.record(null);
 

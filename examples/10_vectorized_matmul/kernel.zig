@@ -1,5 +1,6 @@
 //! Vectorized matmul: same algorithm as example 05, but cooperative loads
-//! use ld.global.v2.f32 inline PTX to load 2 f32s per instruction.
+//! read 2 f32s per instruction through @Vector(2, f32), which LLVM lowers to
+//! a single ld.global.v2 (LDG.E.64 in SASS).
 //! 16×16 output tile, K-tile width doubled to 32 to absorb the 2× load width.
 
 const std = @import("std");
@@ -12,21 +13,14 @@ inline fn syncBlock() void {
     asm volatile ("bar.sync 0;" ::: .{ .memory = true });
 }
 
-/// Vectorized v2.f32 load from global memory. `ptr` must be 8-byte aligned.
-/// Returns two adjacent f32 values starting at `ptr[0]` and `ptr[1]`.
-inline fn loadV2(ptr: [*]addrspace(.global) const f32) struct { f32, f32 } {
-    var v0: f32 = undefined;
-    var v1: f32 = undefined;
-    asm volatile (
-        "ld.global.v2.f32 {%[r0], %[r1]}, [%[p]];"
-        : [r0] "=r" (v0),
-          [r1] "=r" (v1),
-        : [p] "l" (ptr),
-        : .{ .memory = true });
-    return .{ v0, v1 };
+/// Vectorized load of the two adjacent f32s at `ptr[0]` and `ptr[1]`.
+/// `ptr` must be 8-byte aligned (the alignment of @Vector(2, f32)).
+inline fn loadV2(ptr: [*]addrspace(.global) const f32) @Vector(2, f32) {
+    const vp: *addrspace(.global) const @Vector(2, f32) = @ptrCast(@alignCast(ptr));
+    return vp.*;
 }
 
-pub fn matmul_vec(
+export fn matmul_vec(
     M: u32,
     N: u32,
     K: u32,
@@ -98,8 +92,4 @@ pub fn matmul_vec(
     if (row < M and col < N) {
         C[row * N + col] = acc;
     }
-}
-
-export fn __dummy_force_emit() *const anyopaque {
-    return @ptrCast(&matmul_vec);
 }

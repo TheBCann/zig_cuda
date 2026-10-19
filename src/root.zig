@@ -16,7 +16,6 @@ pub const Module = cuda.Module;
 pub const Function = cuda.Function;
 pub const Stream = cuda.Stream;
 
-
 // Memory
 pub const DeviceBuffer = cuda.DeviceBuffer;
 pub const PinnedBuffer = cuda.PinnedBuffer;
@@ -27,4 +26,3 @@ pub const LaunchConfig = cuda.LaunchConfig;
 
 // Timing
 pub const Event = cuda.Event;
-

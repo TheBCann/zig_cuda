@@ -50,8 +50,7 @@ inline fn castFloat(comptime To: type, val: anytype) To {
 inline fn expf32(x: f32) f32 {
     const log2_e: f32 = 1.4426950408889634; // log2(e)
     var out: f32 = undefined;
-    asm volatile (
-        "ex2.approx.f32 %[r], %[v];"
+    asm volatile ("ex2.approx.f32 %[r], %[v];"
         : [r] "=f" (out),
         : [v] "f" (x * log2_e),
     );
@@ -79,8 +78,7 @@ inline fn warpReduce(
 inline fn shuffleDown(comptime T: type, val: T, offset: u32) T {
     if (T == f32) {
         var out: f32 = undefined;
-        asm volatile (
-            "shfl.sync.down.b32 %[r], %[v], %[o], 0x1f, 0xffffffff;"
+        asm volatile ("shfl.sync.down.b32 %[r], %[v], %[o], 0x1f, 0xffffffff;"
             : [r] "=f" (out),
             : [v] "f" (val),
               [o] "r" (offset),
@@ -152,9 +150,8 @@ inline fn softmaxBody(
 
     // ── Pass 1: find the max ────────────────────────────────────────
     var local_max: AccumT = -std.math.inf(AccumT);
-    comptime var i: u32 = 0;
-    inline while (i < @import("std").math.maxInt(u8)) : (i += 1) {
-        if (i >= elements_per_thread) break;
+    var i: u32 = 0;
+    while (i < elements_per_thread) : (i += 1) {
         const col = tid + i * BLOCK;
         if (col < N) {
             const x = castFloat(AccumT, input[row_base + col]);
@@ -228,7 +225,7 @@ inline fn softmaxBody(
 
 // ─── Named instantiations ──────────────────────────────────────────────
 
-pub fn softmax_f32_256(
+export fn softmax_f32_256(
     N: u32,
     input: [*]addrspace(.global) const f32,
     output: [*]addrspace(.global) f32,
@@ -236,18 +233,10 @@ pub fn softmax_f32_256(
     softmaxBody(.{ .T = f32, .accum = f32, .block_size = 256 }, N, input, output);
 }
 
-pub fn softmax_f16_256(
+export fn softmax_f16_256(
     N: u32,
     input: [*]addrspace(.global) const f16,
     output: [*]addrspace(.global) f16,
 ) callconv(.kernel) void {
     softmaxBody(.{ .T = f16, .accum = f32, .block_size = 256 }, N, input, output);
-}
-
-export fn __dummy_force_emit(i: usize) *const anyopaque {
-    const ptrs = [_]*const anyopaque{
-        @ptrCast(&softmax_f32_256),
-        @ptrCast(&softmax_f16_256),
-    };
-    return ptrs[i % 2];
 }

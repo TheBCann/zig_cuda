@@ -14,7 +14,7 @@ pub fn main(init: std.process.Init) !void {
     defer ctx.deinit();
 
     const ptx_data = @embedFile("kernel_ptx");
-    const module = try cuda.Module.loadData(ptx_data);
+    const module = try cuda.Module.loadPtx(ptx_data);
     defer module.unload();
 
     // Host-side argument layout for the vector_add kernel.
@@ -26,7 +26,7 @@ pub fn main(init: std.process.Init) !void {
         out: cuda.bindings.CUdeviceptr,
     };
 
-    const kernel = try module.getFunction(VectorAddArgs, "kernel_$_vector_add");
+    const kernel = try module.getFunction(VectorAddArgs, "vector_add");
 
     const N: u32 = 1 << 20;
     const host_x = try a.alloc(f32, N);

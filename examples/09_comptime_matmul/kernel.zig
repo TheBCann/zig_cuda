@@ -52,8 +52,8 @@ inline fn syncBlock() void {
     asm volatile ("bar.sync 0;" ::: .{ .memory = true });
 }
 
-/// Identity-or-cast float helper. Zig's @floatCast doesn't accept same-type
-/// casts in all versions, so we branch at comptime.
+/// Identity-or-cast float helper: returns `val` unchanged when it is
+/// already `To`, otherwise widens or narrows it with @floatCast.
 inline fn castFloat(comptime To: type, val: anytype) To {
     if (@TypeOf(val) == To) return val;
     return @floatCast(val);
@@ -125,78 +125,50 @@ inline fn matmulBody(
 
 // ─── Named instantiations ────────────────────────────────────────────────
 
-pub fn matmul_f32_8x8(
-    M: u32, N: u32, K: u32,
+export fn matmul_f32_8x8(
+    M: u32,
+    N: u32,
+    K: u32,
     A: [*]addrspace(.global) const f32,
     B: [*]addrspace(.global) const f32,
     C: [*]addrspace(.global) f32,
 ) callconv(.kernel) void {
-    matmulBody(.{
-        .T = f32,
-        .tile_m = 8,
-        .tile_n = 8,
-        .tile_k = 8 },
-        M, N, K, A, B, C
-    );
+    matmulBody(.{ .T = f32, .tile_m = 8, .tile_n = 8, .tile_k = 8 }, M, N, K, A, B, C);
 }
 
-pub fn matmul_f32_16x16(
-    M: u32, N: u32, K: u32,
+export fn matmul_f32_16x16(
+    M: u32,
+    N: u32,
+    K: u32,
     A: [*]addrspace(.global) const f32,
     B: [*]addrspace(.global) const f32,
     C: [*]addrspace(.global) f32,
 ) callconv(.kernel) void {
-    matmulBody(.{
-        .T = f32,
-        .tile_m = 16,
-        .tile_n = 16,
-        .tile_k = 16 },
-        M, N, K, A, B, C
-    );
+    matmulBody(.{ .T = f32, .tile_m = 16, .tile_n = 16, .tile_k = 16 }, M, N, K, A, B, C);
 }
 
-pub fn matmul_f32_32x32(
-    M: u32, N: u32, K: u32,
+export fn matmul_f32_32x32(
+    M: u32,
+    N: u32,
+    K: u32,
     A: [*]addrspace(.global) const f32,
     B: [*]addrspace(.global) const f32,
     C: [*]addrspace(.global) f32,
 ) callconv(.kernel) void {
-    matmulBody(.{
-        .T = f32,
-        .tile_m = 32,
-        .tile_n = 32,
-        .tile_k = 32 },
-        M, N, K, A, B, C
-    );
+    matmulBody(.{ .T = f32, .tile_m = 32, .tile_n = 32, .tile_k = 32 }, M, N, K, A, B, C);
 }
 
 /// f16 inputs/outputs with f32 accumulator — the standard mixed-precision
 /// pattern used by cuBLAS, CUTLASS, and PyTorch. The accumulator type is
 /// chosen at compile time; the @compileError in Config.validate prevents
 /// degenerate combinations like f32 inputs + f16 accumulator.
-pub fn matmul_f16_16x16(
-    M: u32, N: u32, K: u32,
+export fn matmul_f16_16x16(
+    M: u32,
+    N: u32,
+    K: u32,
     A: [*]addrspace(.global) const f16,
     B: [*]addrspace(.global) const f16,
     C: [*]addrspace(.global) f16,
 ) callconv(.kernel) void {
-    matmulBody(.{
-        .T = f16,
-        .tile_m = 16,
-        .tile_n = 16,
-        .tile_k = 16 },
-        M, N, K, A, B, C
-    );
-}
-
-// Runtime-parameterized to keep the optimizer from proving any pointer
-// unused. Forces all four kernels to survive DCE.
-export fn __dummy_force_emit(i: usize) *const anyopaque {
-    const ptrs = [_]*const anyopaque{
-        @ptrCast(&matmul_f32_8x8),
-        @ptrCast(&matmul_f32_16x16),
-        @ptrCast(&matmul_f32_32x32),
-        @ptrCast(&matmul_f16_16x16),
-    };
-    return ptrs[i % 4];
+    matmulBody(.{ .T = f16, .tile_m = 16, .tile_n = 16, .tile_k = 16 }, M, N, K, A, B, C);
 }

@@ -55,7 +55,7 @@ inline fn warpReduceSum(initial: f32) f32 {
     return v;
 }
 
-pub fn block_sum(
+export fn block_sum(
     n: u32,
     input: [*]addrspace(.global) const f32,
     partials: [*]addrspace(.global) f32,
@@ -68,8 +68,8 @@ pub fn block_sum(
 
     const tid: u32 = @intCast(@workItemId(0));
     const bid: u32 = @intCast(@workGroupId(0));
-    const lane: u32 = tid % WARP_SIZE;   // position within warp
-    const warp: u32 = tid / WARP_SIZE;   // which warp this thread is in
+    const lane: u32 = tid % WARP_SIZE; // position within warp
+    const warp: u32 = tid / WARP_SIZE; // which warp this thread is in
 
     // ── Load two elements per thread (Pass 3 boundary trick) ─────────
     const base = bid * BLOCK_SIZE * 2;
@@ -100,8 +100,4 @@ pub fn block_sum(
             partials[bid] = block_total;
         }
     }
-}
-
-export fn __dummy_force_emit() *const anyopaque {
-    return @ptrCast(&block_sum);
 }

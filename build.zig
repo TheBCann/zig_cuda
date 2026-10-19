@@ -17,11 +17,22 @@ const std = @import("std");
 ///   sm_86/87: Ampere           (RTX 30-series, A40, Tegra Orin)
 ///   sm_89:    Ada              (RTX 40-series)
 ///   sm_90/90a: Hopper          (H100, H200)
+/// Zig generates PTX for all of these, but NVIDIA's R590+ drivers (CUDA 13.1
+/// and newer) only run sm_75 and newer; Pascal and Volta need an R580 or
+/// older driver.
 pub const SmArch = enum {
-    sm_60, sm_61, sm_62,
-    sm_70, sm_72, sm_75,
-    sm_80, sm_86, sm_87, sm_89,
-    sm_90, sm_90a,
+    sm_60,
+    sm_61,
+    sm_62,
+    sm_70,
+    sm_72,
+    sm_75,
+    sm_80,
+    sm_86,
+    sm_87,
+    sm_89,
+    sm_90,
+    sm_90a,
 };
 
 pub const KernelOptions = struct {
@@ -31,25 +42,33 @@ pub const KernelOptions = struct {
     source: std.Build.LazyPath,
     /// Target compute capability. Default: sm_75 (Turing).
     sm: SmArch = .sm_75,
-    /// Optimization level. Default: ReleaseFast (kernels are pure compute).
-    optimize: std.builtin.OptimizeMode = .ReleaseFast,
+    /// Optimization level. Default: .fast (kernels are pure compute).
+    optimize: std.lang.Optimize = .fast,
 };
 
 /// Compile a Zig kernel to PTX. Returns the Compile step; call
 /// `kernel.getEmittedAsm()` to get the LazyPath for `addAnonymousImport`.
 ///
-/// Applies the workarounds documented in the README:
-///   - bundle_ubsan_rt = false   (UBSan creates LLVM aliases NVPTX rejects)
-///   - use_llvm = true           (NVPTX backend requires LLVM)
-///   - Targets nvptx64-cuda with the requested SM features
+/// Declare kernels as `export fn name(...) callconv(.kernel)`; the PTX entry
+/// is then `name`, the string to pass to `Module.getFunction`. Give each
+/// kernel a single export name: on NVPTX every export renames the same
+/// symbol, so only one of several names survives, and source order does
+/// not decide which.
 pub fn addKernel(b: *std.Build, opts: KernelOptions) *std.Build.Step.Compile {
     const target = b.resolveTargetQuery(.{
         .cpu_arch = .nvptx64,
         .os_tag = .cuda,
         .cpu_model = .{ .explicit = smToCpu(opts.sm) },
+        // LLVM emits the lowest PTX ISA an SM allows: 5.0 for sm_60-62, which
+        // lacks the shfl.sync warp shuffles some kernels use (they need 6.0).
+        // Newer SMs already default to 6.0 or later.
+        .cpu_features_add = switch (opts.sm) {
+            .sm_60, .sm_61, .sm_62 => std.Target.nvptx.featureSet(&.{.ptx60}),
+            else => .empty,
+        },
     });
 
-    const obj = b.addObject(.{
+    return b.addObject(.{
         .name = opts.name,
         .root_module = b.createModule(.{
             .root_source_file = opts.source,
@@ -57,33 +76,31 @@ pub fn addKernel(b: *std.Build, opts: KernelOptions) *std.Build.Step.Compile {
             .optimize = opts.optimize,
         }),
     });
-    obj.bundle_ubsan_rt = false;
-    obj.use_llvm = true;
-
-    return obj;
 }
 
-
-
 pub const LinkOptions = struct {
-    /// Path to the CUDA installation. If null, defaults to /opt/cuda
-    /// (Arch Linux convention). Common alternatives:
-    ///   /usr/local/cuda    — most distros, NVIDIA's official installer
-    ///   /usr/lib/cuda      — some Debian/Ubuntu setups
+    /// CUDA installation whose `lib/stubs/libcuda.so` satisfies the link; at
+    /// runtime the driver's own libcuda.so.1 is loaded instead. Absolute, or
+    /// relative to the directory `zig build` runs in. If null, pkg-config's
+    /// `cuda` package is used when one exists, else /opt/cuda (the Arch
+    /// Linux layout). For NVIDIA's installer layout pass
+    /// /usr/local/cuda/targets/x86_64-linux, whose lib/stubs holds the stub.
     /// Override with `-Dcuda-path=...` build option in your project.
     cuda_path: ?[]const u8 = null,
 };
 
-/// Configure an executable to link against libcuda (the CUDA Driver API).
-/// Adds the stubs library path, the system library, and a libc
-/// dependency. No include path: the bindings are hand-written extern
-/// declarations, so no C headers are ever compiled.
+/// Configure an executable to link against libcuda (the CUDA Driver API):
+/// the system library, the stubs search path, and libc. An explicit
+/// `cuda_path` turns pkg-config off for libcuda, because pkg-config's -L
+/// would otherwise be searched first and silently win.
 pub fn linkCuda(exe: *std.Build.Step.Compile, opts: LinkOptions) void {
     const b = exe.step.owner;
     const cuda_path = opts.cuda_path orelse "/opt/cuda";
 
-    exe.root_module.linkSystemLibrary("cuda", .{});
-    exe.root_module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/lib/stubs", .{cuda_path}) });
+    exe.root_module.linkSystemLibrary("cuda", .{
+        .use_pkg_config = if (opts.cuda_path != null) .no else .yes,
+    });
+    exe.root_module.addLibraryPath(b.graph.cwdRelativePath(b.fmt("{s}/lib/stubs", .{cuda_path})));
     exe.root_module.link_libc = true;
 }
 
@@ -97,18 +114,23 @@ pub fn linkCuda(exe: *std.Build.Step.Compile, opts: LinkOptions) void {
 // ════════════════════════════════════════════════════════════════════
 
 pub fn build(b: *std.Build) void {
+    // Native CPU so the CPU reference loops use the host's SIMD (AVX2 etc.);
+    // naming linux-gnu explicitly keeps the link hermetic (Zig-built crt
+    // files and glibc stubs, not the host's) and keeps Linux the default
+    // when configuring from another OS. Without the explicit .native, a
+    // partial query like this one compiles for baseline x86-64.
     const host_target = b.standardTargetOptions(.{
         .default_target = .{
+            .cpu_model = .native,
             .os_tag = .linux,
             .abi = .gnu,
-            .glibc_version = .{ .major = 2, .minor = 38, .patch = 0 },
         },
     });
     const optimize = b.standardOptimizeOption(.{});
     const cuda_path = b.option(
         []const u8,
         "cuda-path",
-        "Path to CUDA installation (default: /opt/cuda)",
+        "Directory whose lib/stubs/ holds libcuda.so, e.g. /usr/local/cuda/targets/x86_64-linux (default: pkg-config 'cuda', else /opt/cuda)",
     );
 
     // Expose the runtime cuda module so external consumers can pick it up
@@ -116,6 +138,11 @@ pub fn build(b: *std.Build) void {
     // examples can import it.
     const cuda_module = b.addModule("cuda", .{
         .root_source_file = b.path("src/root.zig"),
+        // The bindings are `extern "cuda" fn`, and Zig only lets a PIC module
+        // depend on a dynamic library by name. Executables stopped defaulting
+        // to PIC in 0.18.0-dev (Zig PR #36532), and `-lcuda` alone does not
+        // satisfy the check, so request PIC for this module explicitly.
+        .pic = true,
     });
 
     // Every example follows the same shape: kernel.zig (compiled to PTX),
@@ -136,7 +163,7 @@ pub fn build(b: *std.Build) void {
         "12_softmax",
         "13_attention_scores",
         "14_attention_output",
-        "15_attention_forward"
+        "15_attention_forward",
     };
 
     // `zig build run-all` runs every example; each one exits nonzero if its
@@ -159,7 +186,8 @@ pub fn build(b: *std.Build) void {
 
 const ExampleBuildOpts = struct {
     host_target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    /// null when no -Doptimize/--release was given; Zig then picks the default.
+    optimize: ?std.lang.Optimize,
     cuda_module: *std.Build.Module,
     cuda_path: ?[]const u8,
     name: []const u8,

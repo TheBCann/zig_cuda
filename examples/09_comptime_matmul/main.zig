@@ -20,7 +20,7 @@ pub fn main(init: std.process.Init) !void {
     const ctx = try cuda.Context.create(dev);
     defer ctx.deinit();
 
-    const module = try cuda.Module.loadData(@embedFile("kernel_ptx"));
+    const module = try cuda.Module.loadPtx(@embedFile("kernel_ptx"));
     defer module.unload();
 
     const MatmulArgs = struct {
@@ -33,10 +33,10 @@ pub fn main(init: std.process.Init) !void {
     };
 
     // ── Grab all four specialized entry points ──────────────────────
-    const k_8x8   = try module.getFunction(MatmulArgs, "kernel_$_matmul_f32_8x8");
-    const k_16x16 = try module.getFunction(MatmulArgs, "kernel_$_matmul_f32_16x16");
-    const k_32x32 = try module.getFunction(MatmulArgs, "kernel_$_matmul_f32_32x32");
-    const k_f16   = try module.getFunction(MatmulArgs, "kernel_$_matmul_f16_16x16");
+    const k_8x8 = try module.getFunction(MatmulArgs, "matmul_f32_8x8");
+    const k_16x16 = try module.getFunction(MatmulArgs, "matmul_f32_16x16");
+    const k_32x32 = try module.getFunction(MatmulArgs, "matmul_f32_32x32");
+    const k_f16 = try module.getFunction(MatmulArgs, "matmul_f16_16x16");
 
     const elements = MATRIX_SIZE * MATRIX_SIZE;
 
@@ -76,7 +76,7 @@ pub fn main(init: std.process.Init) !void {
     };
 
     const configs = [_]KernelConfig{
-        .{ .name = "8x8x8",    .func = k_8x8,   .tile = 8 },
+        .{ .name = "8x8x8", .func = k_8x8, .tile = 8 },
         .{ .name = "16x16x16", .func = k_16x16, .tile = 16 },
         .{ .name = "32x32x32", .func = k_32x32, .tile = 32 },
     };
@@ -100,14 +100,7 @@ pub fn main(init: std.process.Init) !void {
         try cfg.func.launch(.{
             .grid = .{ .x = grid_dim, .y = grid_dim },
             .block = .{ .x = cfg.tile, .y = cfg.tile },
-        }, .{ 
-            .M = M,
-            .N = N,
-            .K = K,
-            .A = dev_a.ptr,
-            .B = dev_b.ptr,
-            .C = dev_c.ptr
-        });
+        }, .{ .M = M, .N = N, .K = K, .A = dev_a.ptr, .B = dev_b.ptr, .C = dev_c.ptr });
         try k_end.record(null);
 
         try k_end.synchronize();
@@ -167,14 +160,7 @@ pub fn main(init: std.process.Init) !void {
     try k_f16.launch(.{
         .grid = .{ .x = f16_grid, .y = f16_grid },
         .block = .{ .x = f16_tile, .y = f16_tile },
-    }, .{ 
-        .M = M,
-        .N = N,
-        .K = K,
-        .A = dev_a_f16.ptr,
-        .B = dev_b_f16.ptr,
-        .C = dev_c_f16.ptr
-    });
+    }, .{ .M = M, .N = N, .K = K, .A = dev_a_f16.ptr, .B = dev_b_f16.ptr, .C = dev_c_f16.ptr });
     try k_end.record(null);
     try k_end.synchronize();
     const f16_ms = try cuda.Event.elapsed(k_start, k_end);

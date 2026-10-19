@@ -53,13 +53,16 @@ fn toErr(r: c.CUresult) CudaError!void {
     };
 }
 
-/// Print a human-readable description of the last error to stderr.
+/// Print `r`'s numeric code, name and description to stderr.
 pub fn logError(r: c.CUresult) void {
     var name: [*:0]const u8 = "?";
     var desc: [*:0]const u8 = "?";
-    _ = c.cuGetErrorName(r, &name);
-    _ = c.cuGetErrorString(r, &desc);
-    std.debug.print("CUDA error: {s}: {s}\n", .{ name, desc });
+    // For a code it doesn't recognize, the driver returns
+    // CUDA_ERROR_INVALID_VALUE and writes NULL; only trust the out-params
+    // when the call succeeded.
+    if (c.cuGetErrorName(r, &name) != .success) name = "?";
+    if (c.cuGetErrorString(r, &desc) != .success) desc = "unrecognized error code";
+    std.debug.print("CUDA error {d}: {s}: {s}\n", .{ @backingInt(r), name, desc });
 }
 
 pub fn init() CudaError!void {
@@ -83,7 +86,7 @@ pub const Device = struct {
 
     pub fn name(self: Device, buf: []u8) CudaError![]const u8 {
         try toErr(c.cuDeviceGetName(buf.ptr, @intCast(buf.len), self.handle));
-        const len = std.mem.indexOfScalar(u8, buf, 0) orelse buf.len;
+        const len = std.mem.findScalar(u8, buf, 0) orelse buf.len;
         return buf[0..len];
     }
 };
@@ -115,6 +118,17 @@ pub const Module = struct {
         return .{ .handle = m };
     }
 
+    /// Load NUL-terminated PTX text, e.g. `@embedFile("kernel_ptx")`. The
+    /// slice type enforces the terminator the driver needs to read PTX.
+    pub fn loadPtx(ptx: [:0]const u8) CudaError!Module {
+        var m: c.CUmodule = null;
+        try toErr(c.cuModuleLoadData(&m, ptx.ptr));
+        return .{ .handle = m };
+    }
+
+    /// Load a cubin or fatbin image, which needs no terminator. For PTX
+    /// text use `loadPtx`: the driver reads PTX up to a NUL byte that this
+    /// signature cannot guarantee.
     pub fn loadData(image: []const u8) CudaError!Module {
         var m: c.CUmodule = null;
         try toErr(c.cuModuleLoadData(&m, image.ptr));
@@ -286,13 +300,17 @@ pub fn Function(comptime Args: type) type {
             }
 
             try toErr(c.cuLaunchKernel(
-                    self.handle,
-                    cfg.grid.x, cfg.grid.y, cfg.grid.z,
-                    cfg.block.x, cfg.block.y, cfg.block.z,
-                    cfg.shared_mem,
-                    cfg.stream,
-                    &ptrs,
-                    null,
+                self.handle,
+                cfg.grid.x,
+                cfg.grid.y,
+                cfg.grid.z,
+                cfg.block.x,
+                cfg.block.y,
+                cfg.block.z,
+                cfg.shared_mem,
+                cfg.stream,
+                &ptrs,
+                null,
             ));
         }
     };
@@ -322,7 +340,7 @@ pub const Event = struct {
         try toErr(c.cuEventSynchronize(self.handle));
     }
 
-        /// Returns milliseconds elapsed between `start` and `end`.
+    /// Returns milliseconds elapsed between `start` and `end`.
     /// Both events must have been recorded; the caller is responsible
     /// for synchronizing on `end` first.
     pub fn elapsed(start: Event, end: Event) CudaError!f32 {

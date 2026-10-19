@@ -31,8 +31,8 @@ pub fn main(init: std.process.Init) !void {
         output: cuda.bindings.CUdeviceptr,
     };
 
-    const module = cuda.Module.loadData(@embedFile("kernel_ptx")) catch |err| {
-        std.log.err("loadData failed: {}\n", .{err});
+    const module = cuda.Module.loadPtx(@embedFile("kernel_ptx")) catch |err| {
+        std.log.err("loadPtx failed: {t}", .{err});
         // Manually retry to get the raw CUresult for logging
         var m: cuda.bindings.CUmodule = null;
         const r = cuda.bindings.cuModuleLoadData(&m, @embedFile("kernel_ptx").ptr);
@@ -41,7 +41,7 @@ pub fn main(init: std.process.Init) !void {
     };
 
     defer module.unload();
-    const kernel = try module.getFunction(SoftmaxArgs, "kernel_$_softmax_f32_256");
+    const kernel = try module.getFunction(SoftmaxArgs, "softmax_f32_256");
 
     const elements: u32 = N * N;
 
