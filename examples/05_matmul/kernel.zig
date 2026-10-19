@@ -27,7 +27,7 @@ inline fn syncBlock() void {
     asm volatile ("bar.sync 0;" ::: .{ .memory = true });
 }
 
-pub fn matmul(
+export fn matmul(
     M: u32,
     N: u32,
     K: u32,
@@ -82,9 +82,4 @@ pub fn matmul(
     if (row < M and col < N) {
         C[row * N + col] = acc;
     }
-}
-
-// See examples/01_vector_add/kernel.zig for why this dummy export is needed.
-export fn __dummy_force_emit() *const anyopaque {
-    return @ptrCast(&matmul);
 }

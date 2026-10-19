@@ -131,7 +131,7 @@ inline fn outputBody(
 
 // ─── Named instantiation ───────────────────────────────────────────────
 
-pub fn output_f32_16(
+export fn output_f32_16(
     N: u32,
     d: u32,
     weights: [*]addrspace(.global) const f32,
@@ -139,8 +139,4 @@ pub fn output_f32_16(
     output: [*]addrspace(.global) f32,
 ) callconv(.kernel) void {
     outputBody(.{ .T = f32, .accum = f32, .tile = 16, .tile_k = 16 }, N, d, weights, v, output);
-}
-
-export fn __dummy_force_emit() *const anyopaque {
-    return @ptrCast(&output_f32_16);
 }

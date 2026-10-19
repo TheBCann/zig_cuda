@@ -122,7 +122,7 @@ inline fn scoresBody(
 
 // ─── Named instantiation ───────────────────────────────────────────────
 
-pub fn scores_f32_16(
+export fn scores_f32_16(
     N: u32,
     d: u32,
     inv_sqrt_d: f32,
@@ -130,14 +130,5 @@ pub fn scores_f32_16(
     k: [*]addrspace(.global) const f32,
     scores: [*]addrspace(.global) f32,
 ) callconv(.kernel) void {
-    scoresBody(
-        .{
-        .T = f32,
-        .accum = f32,
-        .tile = 16 
-        }, N, d, inv_sqrt_d, q, k, scores);
-}
-
-export fn __dummy_force_emit() *const anyopaque {
-    return @ptrCast(&scores_f32_16);
+    scoresBody(.{ .T = f32, .accum = f32, .tile = 16 }, N, d, inv_sqrt_d, q, k, scores);
 }

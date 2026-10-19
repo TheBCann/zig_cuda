@@ -20,9 +20,9 @@ pub fn main(init: std.process.Init) !void {
         out: cuda.bindings.CUdeviceptr,
     };
 
-    const module = try cuda.Module.loadData(@embedFile("kernel_ptx"));
+    const module = try cuda.Module.loadPtx(@embedFile("kernel_ptx"));
     defer module.unload();
-    const kernel = try module.getFunction(VectorAddArgs, "kernel_$_vector_add");
+    const kernel = try module.getFunction(VectorAddArgs, "vector_add");
 
     const N: u32 = 1 << 20;
     const host_x = try allocator.alloc(f32, N);
@@ -84,7 +84,6 @@ pub fn main(init: std.process.Init) !void {
     const gpu_ms = try cuda.Event.elapsed(start, end);
 
     try dout.copyToHost(host_out);
-
 
     // ── Verify ───────────────────────────────────────────────────────
     var max_err: f32 = 0;

@@ -31,9 +31,9 @@ pub fn main(init: std.process.Init) !void {
         scores: cuda.bindings.CUdeviceptr,
     };
 
-    const module = try cuda.Module.loadData(@embedFile("kernel_ptx"));
+    const module = try cuda.Module.loadPtx(@embedFile("kernel_ptx"));
     defer module.unload();
-    const kernel = try module.getFunction(ScoresArgs, "kernel_$_scores_f32_16");
+    const kernel = try module.getFunction(ScoresArgs, "scores_f32_16");
 
     const qk_elements: u32 = N * D;
     const scores_elements: u32 = N * N;

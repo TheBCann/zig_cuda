@@ -22,9 +22,9 @@
 const std = @import("std");
 const cuda = @import("cuda");
 
-const N: u32 = 1 << 24;        // 16M elements, 64 MB per buffer
-const K: u32 = 4;              // number of chunks for the streamed version
-const CHUNK: u32 = N / K;       // elements per chunk
+const N: u32 = 1 << 24; // 16M elements, 64 MB per buffer
+const K: u32 = 4; // number of chunks for the streamed version
+const CHUNK: u32 = N / K; // elements per chunk
 const NUM_STREAMS: u32 = 2;
 
 pub fn main(init: std.process.Init) !void {
@@ -46,10 +46,10 @@ pub fn main(init: std.process.Init) !void {
         out: cuda.bindings.CUdeviceptr,
     };
 
-    const module = try cuda.Module.loadData(@embedFile("kernel_ptx"));
+    const module = try cuda.Module.loadPtx(@embedFile("kernel_ptx"));
     defer module.unload();
     const kernel =
-        try module.getFunction(VectorAddArgs, "kernel_$_vector_add");
+        try module.getFunction(VectorAddArgs, "vector_add");
 
     // ── Synchronous baseline (pageable memory, default stream) ───────
     // Reuses the same approach as example 03. This is the number we're
@@ -91,12 +91,7 @@ pub fn main(init: std.process.Init) !void {
     try kernel.launch(.{
         .grid = .{ .x = grid },
         .block = .{ .x = block },
-    }, .{
-        .n = runtime_n,
-        .x = dx.ptr,
-        .y = dy.ptr,
-        .out = dout.ptr
-    });
+    }, .{ .n = runtime_n, .x = dx.ptr, .y = dy.ptr, .out = dout.ptr });
 
     try dout.copyToHost(host_out_sync);
     try sync_end.record(null);
@@ -176,12 +171,7 @@ pub fn main(init: std.process.Init) !void {
             .grid = .{ .x = chunk_grid },
             .block = .{ .x = block },
             .stream = stream.handle,
-        }, .{ 
-            .n = chunk_n,
-            .x = dx_off,
-            .y = dy_off,
-            .out = dout_off
-        });
+        }, .{ .n = chunk_n, .x = dx_off, .y = dy_off, .out = dout_off });
 
         try toErr(cuda.bindings.cuMemcpyDtoHAsync_v2(
             out_slice.ptr,

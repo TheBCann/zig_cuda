@@ -22,7 +22,7 @@ inline fn syncBlock() void {
     asm volatile ("bar.sync 0;" ::: .{ .memory = true });
 }
 
-pub fn matmul_reg(
+export fn matmul_reg(
     M: u32,
     N: u32,
     K: u32,
@@ -134,8 +134,4 @@ pub fn matmul_reg(
             }
         }
     }
-}
-
-export fn __dummy_force_emit() *const anyopaque {
-    return @ptrCast(&matmul_reg);
 }

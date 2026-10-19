@@ -1,6 +1,8 @@
-//! Raw FFI bindings to libcuda.so (CUDA Driver API).
-//! Hand-written, no @cImport. Only the symbols needed for basic
-//! kernel launch are declared here. Add more as needed.
+//! Raw FFI bindings to libcuda.so (CUDA Driver API), hand-written as
+//! extern declarations. A small subset of the Driver API: the calls
+//! src/cuda.zig and the examples use, plus a few extras (cuDriverGetVersion,
+//! cuDeviceTotalMem_v2, cuCtxSetCurrent, cuMemsetD8_v2, cuMemsetD32_v2);
+//! add more as needed.
 //!
 //! Reference: https://docs.nvidia.com/cuda/cuda-driver-api/
 
@@ -37,6 +39,13 @@ pub const CUresult = enum(c_int) {
     not_mapped = 211,
     ecc_uncorrectable = 214,
     unsupported_limit = 215,
+    context_already_in_use = 216,
+    invalid_ptx = 218,
+    invalid_graphics_context = 219,
+    nvlink_uncorrectable = 220,
+    jit_compiler_not_found = 221,
+    unsupported_ptx_version = 222,
+    jit_compilation_disabled = 223,
     invalid_source = 300,
     file_not_found = 301,
     shared_object_symbol_not_found = 302,
@@ -50,13 +59,9 @@ pub const CUresult = enum(c_int) {
     launch_out_of_resources = 701,
     launch_timeout = 702,
     launch_incompatible_texturing = 703,
-    context_already_in_use = 708,
-    invalid_ptx = 718,
-    invalid_graphics_context = 719,
-    nvlink_uncorrectable = 720,
-    jit_compiler_not_found = 721,
-    invalid_source_kind = 722,
-    unsupported_ptx_version = 723,
+    primary_context_active = 708,
+    invalid_pc = 718,
+    launch_failed = 719,
     unknown = 999,
     _, // open enum — driver may return codes we haven't mapped
 };
@@ -214,10 +219,16 @@ pub extern "cuda" fn cuEventElapsedTime(
 ) CUresult;
 
 // ── Error string lookup (handy for debugging) ───────────────────────────
+/// For an unrecognized `err` the driver returns `.invalid_value` and stores
+/// NULL in `str.*` despite its non-optional type; read `str.*` only after
+/// `.success` (see `cuda.logError`).
 pub extern "cuda" fn cuGetErrorName(
     err: CUresult,
     str: *[*:0]const u8,
 ) CUresult;
+/// For an unrecognized `err` the driver returns `.invalid_value` and stores
+/// NULL in `str.*` despite its non-optional type; read `str.*` only after
+/// `.success` (see `cuda.logError`).
 pub extern "cuda" fn cuGetErrorString(
     err: CUresult,
     str: *[*:0]const u8,

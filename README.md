@@ -3,11 +3,13 @@
 Pure-Zig bindings for the NVIDIA CUDA Driver API, plus working examples
 that compile Zig kernels to PTX and launch them on the GPU.
 
-No `@cImport`. No CUDA SDK headers needed — the bindings are
+No CUDA SDK headers needed — the bindings are
 hand-written `extern "cuda"` declarations. At link time the build
-resolves `libcuda.so` against the CUDA toolkit's `lib/stubs` directory
-by default (override with `-Dcuda-path`); at runtime only the real
-`libcuda.so` (which ships with the NVIDIA driver) is needed.
+resolves `libcuda.so` through pkg-config's `cuda` package when your
+system has one, otherwise against the CUDA toolkit's `lib/stubs`
+directory (default `/opt/cuda`); `-Dcuda-path` overrides both. At
+runtime only the real `libcuda.so` (which ships with the NVIDIA driver)
+is needed.
 The PTX kernels are compiled by Zig's NVPTX backend and embedded into
 the host binary via `@embedFile`, so each example produces a single
 self-contained executable.
@@ -16,9 +18,14 @@ self-contained executable.
 
 Working on:
 
-- Zig 0.17.0-dev.1460+9a9d8adda (nightly; older nightlies before the
-  `@typeInfo` field_names/field_types rework will not compile)
-- Arch Linux, kernel 7.1, NVIDIA driver via `nvidia-dkms`
+- Zig 0.17.0 or newer. Tested on the 0.17.0 release and on nightlies
+  0.18.0-dev.291+13ee14043 and 0.18.0-dev.349+d924f83bf. Nightlies
+  0.18.0-dev.287 through 0.18.0-dev.295 have a Zig bug (fixed in
+  dev.296 by Zig commit `156ab92d9d`, 2026-10-15) that breaks using this
+  package as a dependency; the examples themselves still build and run
+  there.
+- Arch Linux, kernel 7.2, NVIDIA driver 610.57.04 via `nvidia-open-dkms`,
+  CUDA 13.3
 - GTX 1660 Ti (Turing, sm_75)
 
 ## Using as a dependency
@@ -37,14 +44,12 @@ const cuda = @import("cuda"); // imports zig_cuda's build.zig
 
 pub fn build(b: *std.Build) void {
     const host_target = b.standardTargetOptions(.{
-        .default_target = .{
-            .os_tag = .linux,
-            .abi = .gnu,
-            .glibc_version = .{ .major = 2, .minor = 38, .patch = 0 },
-        },
+        // Portable baseline x86-64 host code. Add `.cpu_model = .native` for the
+        // host's SIMD, as zig_cuda's own examples do.
+        .default_target = .{ .os_tag = .linux, .abi = .gnu },
     });
     const optimize = b.standardOptimizeOption(.{});
-    const cuda_path = b.option([]const u8, "cuda-path", "Path to CUDA installation");
+    const cuda_path = b.option([]const u8, "cuda-path", "Directory whose lib/stubs/ holds libcuda.so");
 
     const cuda_dep = b.dependency("cuda", .{
         .target = host_target,
@@ -79,7 +84,12 @@ pub fn build(b: *std.Build) void {
 }
 ```
 
-Your kernel and host code follow the patterns shown in `examples/01_vector_add/`.
+Your kernel and host code follow the patterns shown in
+`examples/01_vector_add/`: declare each kernel as
+`export fn name(...) callconv(.kernel)` and look it up from the host
+with `module.getFunction(Args, "name")`. Kernels written for older Zig
+(a `pub fn` kernel kept alive by an `__dummy_force_emit` export and
+looked up by its mangled name, e.g. `"kernel_$_name"`) still work.
 
 **Note on the dual `"cuda"` name.** `@import("cuda")` at the top of `build.zig`
 imports zig_cuda's build.zig as a namespace (giving you `addKernel`, `linkCuda`,
@@ -88,11 +98,25 @@ imports zig_cuda's build.zig as a namespace (giving you `addKernel`, `linkCuda`,
 (`src/root.zig`) for your main.zig to `@import("cuda")` at runtime. Two
 different things named "cuda" depending on context.
 
-**Default CUDA path** is `/opt/cuda` (Arch Linux). On other distros pass
-`-Dcuda-path=/usr/local/cuda` or whatever your installation directory is.
+**The `cuda` module is compiled as PIC.** Its bindings are
+`extern "cuda"` declarations, and Zig only lets position-independent
+code depend on a dynamic library by name. `cuda_dep.module("cuda")`
+already has `.pic = true`; if you build your own module from
+zig_cuda's `src/root.zig`, set `.pic = true` on it too (see
+[Workarounds](#workarounds)).
+
+**CUDA path.** libcuda is found through pkg-config's `cuda` package if
+your system has one, else under `/opt/cuda` (Arch Linux). Otherwise
+pass the directory whose `lib/stubs/` holds `libcuda.so`, e.g.
+`-Dcuda-path=/usr/local/cuda/targets/x86_64-linux` for NVIDIA's
+installer layout. An explicit `-Dcuda-path` always takes precedence
+over pkg-config.
 
 **Supported SM architectures**: sm_60 through sm_90a, covering Pascal,
 Volta, Turing, Ampere, Ada, and Hopper. Match the constant to your GPU.
+Pascal and Volta (sm_60–sm_72) need an R580-or-older NVIDIA driver
+(R580 is the CUDA 13.0 driver branch); R590+ drivers (CUDA 13.1 and
+newer) only support sm_75 and newer.
 
 ## Building
 
@@ -101,20 +125,24 @@ zig build                                                       # build everythi
 zig build run-all                                               # run + verify all 15 (each exits nonzero on bad results)
 zig build run-01_vector_add                                     # minimal launch
 zig build run-02_timed_vector_add                               # kernel-only timing
-zig build run-03_pcie_truth              -Doptimize=ReleaseSafe # honest end-to-end timing
-zig build run-04_reduction               -Doptimize=ReleaseSafe # reduction v1 (tree)
-zig build run-05_matmul                  -Doptimize=ReleaseSafe # tiled matmul
-zig build run-06_reduction_v2            -Doptimize=ReleaseSafe # reduction v2 (halve threads)
-zig build run-07_reduction_v3            -Doptimize=ReleaseSafe # reduction v3 (warp shuffles)
-zig build run-08_streams                 -Doptimize=ReleaseSafe # pinned + async streams
-zig build run-09_comptime_matmul         -Doptimize=ReleaseSafe # 4 PTX kernels from one source
-zig build run-10_vectorized_matmul       -Doptimize=ReleaseSafe # ld.global.v2.f32 cooperative loads
-zig build run-11_register_blocked_matmul -Doptimize=ReleaseSafe # 4x4 register tile per thread (1.5 TFLOPS)
-zig build run-12_softmax                 -Doptimize=ReleaseSafe # row-wise stable softmax
-zig build run-13_attention_scores        -Doptimize=ReleaseSafe # scores = (Q @ K^T) / sqrt(d)
-zig build run-14_attention_output        -Doptimize=ReleaseSafe # output = weights @ V
-zig build run-15_attention_forward       -Doptimize=ReleaseSafe # integrated attention forward pass
+zig build run-03_pcie_truth              -Doptimize=safe        # honest end-to-end timing
+zig build run-04_reduction               -Doptimize=safe        # reduction v1 (tree)
+zig build run-05_matmul                  -Doptimize=safe        # tiled matmul
+zig build run-06_reduction_v2            -Doptimize=safe        # reduction v2 (halve threads)
+zig build run-07_reduction_v3            -Doptimize=safe        # reduction v3 (warp shuffles)
+zig build run-08_streams                 -Doptimize=safe        # pinned + async streams
+zig build run-09_comptime_matmul         -Doptimize=safe        # 4 PTX kernels from one source
+zig build run-10_vectorized_matmul       -Doptimize=safe        # @Vector(2, f32) cooperative loads
+zig build run-11_register_blocked_matmul -Doptimize=safe        # 4x4 register tile per thread (1.5 TFLOPS)
+zig build run-12_softmax                 -Doptimize=safe        # row-wise stable softmax
+zig build run-13_attention_scores        -Doptimize=safe        # scores = (Q @ K^T) / sqrt(d)
+zig build run-14_attention_output        -Doptimize=safe        # output = weights @ V
+zig build run-15_attention_forward       -Doptimize=safe        # integrated attention forward pass
 ```
+
+`run-all` runs the examples one at a time, but on a cold cache it
+starts running early examples while later ones are still compiling.
+For timings, run `zig build` first or use a single `run-NN` step.
 
 Expected output for the first example:
 
@@ -138,10 +166,10 @@ examples/
   04_reduction/                    # shared-memory tree reduction (sum) — baseline
   05_matmul/                       # tiled 2D matrix multiply (the GPU-shines example)
   06_reduction_v2/                 # halve threads, double loads at boundary (1.7× faster)
-  07_reduction_v3/                 # warp-shuffle reduction (1.7× faster again, 2.7× over v1)
+  07_reduction_v3/                 # warp-shuffle reduction (1.7× faster again, ~3× over v1)
   08_streams/                      # pinned host memory + 2-stream pipelining (1.78× speedup)
   09_comptime_matmul/              # 4 specialized kernels (f32×3, f16×1) from one source
-  10_vectorized_matmul/            # ld.global.v2.f32 cooperative loads (compute-bound finding)
+  10_vectorized_matmul/            # @Vector(2, f32) cooperative loads (global loads weren't the bottleneck)
   11_register_blocked_matmul/      # 4×4 register tile per thread (1.5 TFLOPS, 2.7× over simple tiled)
   12_softmax/                      # row-wise numerically stable softmax (warp-shuffle reductions)
   13_attention_scores/             # scores = (Q @ K^T) / sqrt(d), K^T via shared-memory transpose
@@ -151,126 +179,100 @@ examples/
 
 ## Workarounds
 
-This project is bleeding-edge and currently relies on five distinct
-workarounds for issues at the intersection of Zig nightly, LLVM's
-NVPTX backend, and modern Linux toolchains. All five must be in place
-simultaneously for the build to succeed and the kernel to run. As the
-toolchain matures, each of these should become unnecessary — they are
-load-bearing today, not forever.
+This project originally shipped five workarounds for issues at the
+intersection of Zig nightly, LLVM's NVPTX backend, and the host
+toolchain. None is needed on Zig 0.17.0 or newer (#2 never had any
+effect), and all five have been removed; Zig 0.18.0-dev added one new
+requirement. The history is kept below because code written against
+older Zig still carries these patterns.
 
-### 1. Glibc pinned to 2.38 to bypass GCC 15's `.sframe` relocations
+### Required: the `cuda` module is compiled as PIC
 
-GCC 15 emits `.sframe` (Stack Frame Format) sections in `crt1.o` for
-fast unwinding. Zig's bundled LLD doesn't yet handle `R_X86_64_PC64`
-relocations inside `.sframe`, so linking the host binary against the
-system's `crt1.o` panics with:
+Since Zig PR #36532 (0.18.0-dev.131) executables no longer default to
+position-independent code, and Zig only lets PIC code depend on a
+dynamic library by name. Every `extern "cuda" fn` then fails with:
 
 ```
-fatal linker error: unhandled relocation type R_X86_64_PC64 at offset 0x1c
-  note: in /usr/lib/gcc/x86_64-pc-linux-gnu/15.2.1/.../crt1.o:.sframe
+error: dependency on dynamic library 'cuda' requires enabling Position Independent Code; fixed by '-lcuda' or '-fPIC'
 ```
 
-Fix: target an older glibc explicitly. Zig then uses its bundled,
-hermetic startup objects instead of the host system's:
+The `-lcuda` half of that hint is wrong for executables: linking
+libcuda does not satisfy the check. So `build.zig` creates the module
+with `.pic = true`:
 
 ```zig
-const target = b.standardTargetOptions(.{
-    .default_target = .{
-        .os_tag = .linux,
-        .abi = .gnu,
-        .glibc_version = .{ .major = 2, .minor = 38, .patch = 0 },
-    },
+const cuda_module = b.addModule("cuda", .{
+    .root_source_file = b.path("src/root.zig"),
+    .pic = true,
 });
 ```
 
-### 2. UBSan runtime disabled on the kernel object
+Consumers using `cuda_dep.module("cuda")` inherit this; if you build
+your own module from zig_cuda's sources, set `.pic = true` yourself.
 
-Zig's UBSan runtime hooks generate LLVM aliases. On the NVPTX backend,
-any alias targeting a `callconv(.kernel)` function is rejected:
+### Retired
 
-```
-LLVM ERROR: NVPTX aliasee must be a non-kernel function definition
-```
+1. **Glibc pinned to 2.38.** The host glibc's `crt1.o`, built by GCC
+   15+ toolchains that emit SFrame data, has `.sframe` sections
+   containing `R_X86_64_PC64` relocations, which Zig's self-hosted ELF
+   linker (used for Debug x86_64 builds) could not handle: `fatal linker error: unhandled relocation type
+   R_X86_64_PC64 ... crt1.o:.sframe`. Zig commit 9df02121d0
+   ("link.Elf: support R_X86_64_PC64", in 0.17.0) fixed it. The default
+   host target still names `linux-gnu` explicitly, which keeps linking
+   hermetic (Zig-built startup files, not the host's), just without a
+   glibc version pin.
+2. **UBSan runtime disabled on the kernel object**
+   (`bundle_ubsan_rt = false`). Zig never builds the UBSan runtime for
+   NVPTX, so the setting was a no-op and the PTX is byte-identical
+   without it. The same goes for `use_llvm = true`: NVPTX always goes
+   through LLVM.
+3. **Kernels declared `pub fn` instead of `export fn`.** Zig used to
+   lower `export fn` on a `callconv(.kernel)` function to an LLVM
+   alias, which NVPTX rejects (`LLVM ERROR: NVPTX aliasee must be a
+   non-kernel function definition`). Since Zig 0.17.0 an export renames
+   the kernel itself (commits 1b7b856a81, 2785bc3823 and 31500242f0),
+   so `export fn` emits `.visible .entry vector_add` directly.
+4. **A `__dummy_force_emit` export to keep kernels from being DCE'd.**
+   Only needed while kernels are `pub fn`: nothing in the device code
+   calls them, so dead-code elimination removed them. Exported kernels
+   are roots and always survive. (`comptime { _ = vector_add; }` and
+   `_ = &vector_add` still don't keep a `pub fn` kernel alive.)
+5. **Host lookups by mangled name** (`"kernel_$_vector_add"`). A
+   consequence of #3: a non-exported kernel gets a mangled PTX symbol,
+   `<file stem>_$_<name>`. Exported kernels keep their plain names, so
+   the host now calls `module.getFunction(Args, "vector_add")`.
 
-Fix: disable the UBSan runtime on the device-side compilation:
-
-```zig
-kernel.bundle_ubsan_rt = false;
-```
-
-### 3. Kernel function uses `pub fn`, not `export fn`
-
-`export fn` on a `callconv(.kernel)` function creates an LLVM alias —
-same NVPTX restriction as above. Fix: declare the kernel as `pub fn`
-instead. This sidesteps the alias machinery but introduces problem #4.
-
-### 4. A dummy export keeps the kernel from being DCE'd
-
-A `pub fn` that nothing in the device-side compilation unit calls gets
-dead-code-eliminated, producing an empty PTX file (just the header, no
-`.entry`). The kernel is supposed to be called from the host via the
-CUDA driver, but Zig's DCE doesn't know that.
-
-The natural workarounds — `comptime { _ = vector_add; }`,
-`_ = &vector_add`, `export const x = @ptrCast(&vector_add)`,
-`@export(&vector_add, ...)` — all either still get DCE'd or hit the
-alias bug from #2/#3.
-
-Fix: an `export fn` with a body that returns a pointer to the kernel.
-Because it has a body, LLVM compiles it as a regular non-kernel
-function and materializes the pointer-to-kernel as a normal instruction
-operand (not an alias). The kernel survives DCE because the dummy
-references it:
-
-```zig
-export fn __dummy_force_emit() *const anyopaque {
-    return @ptrCast(&vector_add);
-}
-```
-
-For multi-kernel modules (example 09), the dummy takes a runtime
-parameter to prevent the optimizer from proving any specific pointer
-unused — forcing all kernels to survive:
-
-```zig
-export fn __dummy_force_emit(i: usize) *const anyopaque {
-    const ptrs = [_]*const anyopaque{
-        @ptrCast(&matmul_f32_8x8),
-        @ptrCast(&matmul_f32_16x16),
-        @ptrCast(&matmul_f32_32x32),
-        @ptrCast(&matmul_f16_16x16),
-    };
-    return ptrs[i % 4];
-}
-```
-
-### 5. Host looks up the kernel by its mangled symbol name
-
-Because `vector_add` is `pub fn` (not `export fn`), Zig mangles its
-symbol in the PTX output to `kernel_$_vector_add`. The host code calls
-`cuModuleGetFunction` with that exact string:
-
-```zig
-const kernel = try module.getFunction(VectorAddArgs, "kernel_$_vector_add");
-```
-
-To verify the name on your build, run:
+**One export name per kernel.** On NVPTX each export renames the same
+symbol, so a kernel exported under more than one name (`export fn`
+plus `@export`, or several `@export`s) keeps only one of them in the
+PTX. Which one survives follows the compiler's processing order, not
+source order, and a host lookup by any other name fails at runtime. CI
+checks that every `getFunction` name exists as a PTX `.entry`. To see
+the names on your build:
 
 ```sh
 zig build
-find .zig-cache -name '*_kernel.s' -exec grep '\.entry' {} \;
+grep -ao '\.entry [A-Za-z0-9_$]*' zig-out/bin/*
 ```
+
+Each executable embeds its PTX, so this lists the entry points each
+installed binary actually carries (`.zig-cache` keeps every PTX variant
+ever built, including stale ones).
 
 ## Architecture notes
 
-**Hand-rolled bindings, not `@cImport`.** The bindings in
+**Hand-rolled bindings.** The bindings in
 `src/bindings.zig` are written directly as `pub extern "cuda" fn ...`
-declarations. This makes the project insensitive to the upcoming
-`@cImport`-to-build-system migration in Zig and avoids needing the CUDA
-SDK headers at compile time. Only `libcuda.so` is needed at link time —
-the build system finds it via `linkSystemLibrary("cuda", .{})`,
-resolved against the toolkit's `lib/stubs` directory by default. At
-runtime the dynamic linker picks up the driver's real `libcuda.so`.
+declarations. `@cImport` has since been removed from the language
+(Zig 0.17.0; C headers now go through the build system's translate-c
+step), and hand-written externs need neither translate-c nor the CUDA
+SDK headers. Only `libcuda.so` is needed at link time — `linkCuda`
+finds it via `linkSystemLibrary("cuda", ...)`, through pkg-config's
+`cuda` package when present and the toolkit's `lib/stubs` directory
+otherwise (`-Dcuda-path` overrides both). At runtime the dynamic linker
+picks up the driver's real `libcuda.so.1`. Because the declarations
+name a dynamic library, the module must be compiled as PIC (see
+[Workarounds](#workarounds)).
 
 **`_v2` ABI symbols.** Driver API functions that handle 64-bit device
 pointers expose `_v2` symbols at the ABI level. The C header `#define`s
@@ -293,7 +295,7 @@ const VectorAddArgs = struct {
     out: cuda.bindings.CUdeviceptr,
 };
 
-const kernel = try module.getFunction(VectorAddArgs, "kernel_$_vector_add");
+const kernel = try module.getFunction(VectorAddArgs, "vector_add");
 
 try kernel.launch(.{
     .grid = .{ .x = grid },
@@ -308,22 +310,34 @@ and different kernels keep their type-checked launches from
 cross-contaminating.
 
 **PTX is embedded, not loaded from disk.** The host calls
-`cuda.Module.loadData(@embedFile("kernel_ptx"))`, where the embed is
+`cuda.Module.loadPtx(@embedFile("kernel_ptx"))`, where the embed is
 wired up in `build.zig` via `addAnonymousImport`. The single executable
 contains the PTX bytes inline. No filesystem dependency at runtime.
+`loadPtx` takes a `[:0]const u8`, so the type guarantees the NUL
+terminator the driver needs to read PTX text; `loadData` is for cubin
+and fatbin images, which need none.
 
-**Inline PTX for instructions LLVM doesn't expose.** Some PTX
-instructions (vectorized loads `ld.global.v2.f32`, warp shuffles
-`shfl.sync.down.b32`, the block barrier `bar.sync`, the fast-exp
-`ex2.approx.f32`) aren't directly generated by LLVM from normal Zig
-code. Examples 07, 10, 12 use Zig's inline asm syntax with NVPTX
-constraint letters (`r` for 32-bit registers, `l` for 64-bit pointers,
-`f` for 32-bit floats) to drop down to PTX where needed.
+**Inline PTX where Zig has no builtin.** The block barrier `bar.sync`
+(examples 04–07 and 09–15) and the warp shuffle `shfl.sync.down.b32`
+(07, 12, 15) have no Zig builtin, so those kernels use Zig's inline asm
+with NVPTX constraint letters (`r` for 32-bit integer registers, `f`
+for 32-bit floats). Examples 12 and 15 also use inline
+`ex2.approx.f32` for a fast exp, though `@exp2(x * log2(e))` now lowers
+to the same instructions. Vectorized loads need no asm: example 10
+loads through a `*const @Vector(2, f32)` pointer, which LLVM lowers to
+a single `ld.global.v2`.
 
 ## Performance
 
 Measured on a GTX 1660 Ti, i7-9700K, PCIe Gen3 x16, with
-`-Doptimize=ReleaseSafe`.
+`-Doptimize=safe`. Figures come from single runs with no warm-up (the
+15_forward row summarizes several): GPU numbers are CUDA-event timings
+(kernel only, or copies plus kernels for the end-to-end and streams
+rows), CPU numbers use the host monotonic clock. Expect 2–5×
+run-to-run variation on the GPU side depending on clock state, and more
+on a loaded CPU; treat the numbers as indicative, not as benchmarks.
+Most were recorded on earlier Zig nightlies; the 15_forward row was
+re-measured on 0.18.0-dev.
 
 ### Vector add (worst-case workload)
 
@@ -367,7 +381,7 @@ For 1M-element f32 sum reduction (N = 1 << 20), three successive
 kernel rewrites:
 
 ```
-CPU loop (autovectorized):    0.9 ms
+CPU loop (scalar f64 sum):    0.9 ms
 GPU v1 (tree reduction):      0.074 ms   (12× vs CPU)
 GPU v2 (halve threads):       0.043 ms   (21× vs CPU)
 GPU v3 (warp shuffles):       0.025 ms   (37× vs CPU)
@@ -431,11 +445,12 @@ from one Zig source. A compile-time `@compileError` rejects degenerate
 combinations like "f32 inputs with f16 accumulator" before any kernel
 gets emitted.
 
-The f16 kernel beats every f32 config on this hardware despite the
-1660 Ti having no tensor cores. The wins are structural: half the
-shared memory per tile, half the bandwidth per load. On hardware with
-tensor cores (RTX 2060+, A100, H100) the gap would be 3-8× larger
-because those cards have dedicated f16 matmul units.
+The f16 kernel matches or slightly beats the best f32 config on this
+hardware despite the 1660 Ti having no tensor cores. The wins are structural: half the
+shared memory per tile, half the bandwidth per load. This kernel
+converts every f16 to f32 and does plain f32 multiplies and adds (no
+`mma`/`wmma`), so tensor-core GPUs would not widen the f16 gap; only a
+kernel rewritten around `mma.sync`/`wmma` would use those units.
 
 Each of the four kernels is a distinct PTX `.entry` compiled from the
 same source. The CUDA C++ equivalent would be a template
@@ -451,22 +466,24 @@ Two more matmul experiments past comptime specialization, with one
 clear winner.
 
 **Example 10 — vectorized cooperative loads.** Replace per-element
-scalar loads with `ld.global.v2.f32` inline PTX to load two f32s per
-instruction. Doubled K-direction tile (16 → 32) to absorb the wider
-loads. Result: 561 GFLOPS — essentially identical to the baseline.
+scalar loads with `@Vector(2, f32)` loads, which compile to one
+`ld.global.v2` instruction per two f32s. Doubled K-direction tile
+(16 → 32) to absorb the wider loads. Result: 561 GFLOPS — essentially
+identical to the baseline.
 
-The kernel was already compute-bound, not memory-bound. Counting the
-inner-loop work: per K-tile iteration, each thread does 32 FMAs vs
-only ~3 memory ops. Halving the memory ops (which were already a small
-minority of the work) barely moved the needle. **Vectorized loads
-don't help without arithmetic intensity to expose the underlying
-bandwidth ceiling.**
+Global memory was not the limit. Per K-tile each thread issues only
+~3 global loads (one `ld.global.v2` for A, two scalar loads for B,
+whose column-direction access can't be vectorized) against 32
+multiply-adds, so widening some of them barely moved the needle. The
+real ceiling at ~560 GFLOPS (about 10% of the 1660 Ti's ~5.6 TFLOPS
+FP32 peak) is the inner product's 2 shared-memory loads per
+multiply-add, which example 11 attacks.
 
 **Example 11 — register-blocked matmul.** Each thread now computes a
 4×4 tile of C in registers instead of one element. Inner loop: 8
 shared-memory loads + 16 FMAs per K iteration (vs 2 loads + 1 FMA in
-the simple version). Loads-per-FMA ratio drops from 2.0 to 0.5 — the
-GPU's FMA units actually run near peak throughput.
+the simple version). Loads-per-FMA ratio drops from 2.0 to 0.5, which
+lifts the kernel to ~1.5 TFLOPS (about a quarter of FP32 peak).
 
 Plus: `@mulAdd(f32, ...)` forces emission of `fma.rn.f32` instead of
 the compiler's default `mul.rn.f32` + `add.rn.f32` (one rounding step
@@ -506,16 +523,17 @@ For N=512 (sequence length), d=64 (head dimension), single-head:
 [ 12_softmax  ]  →  0.094 ms   (53.7 GB/s, max abs err 4.8e-8)
 [ 13_scores   ]  →  0.167 ms   (201 GFLOPS, max abs err 7.5e-8)
 [ 14_output   ]  →  0.154 ms   (218 GFLOPS, max abs err 2.2e-8)
-[ 15_forward  ]  →  0.258 ms   (full pipeline, 930× vs CPU)
+[ 15_forward  ]  →  ~0.2 ms    (full pipeline, ~120–150× vs CPU)
 ```
 
 **Softmax (example 12).** Row-wise numerically stable softmax using
 the standard `exp(x - max) / sum` formulation. Each block handles one
 row of the input matrix. Reductions for the max and the sum both use
 warp-shuffle finalization (the technique from example 07_reduction_v3).
-The `@exp` builtin emits a libcall that NVPTX can't link against, so
-the kernel uses inline PTX `ex2.approx.f32` with the identity
-`e^x = 2^(x * log2(e))`.
+`@exp` has no NVPTX lowering (it fails to compile: no libcall is
+available), so the kernel computes `e^x = 2^(x * log2(e))` with inline
+PTX `ex2.approx.f32`; `@exp2(x * log2(e))` would now produce the same
+instructions.
 
 The `warpReduce` helper is comptime-generic over the combine function
 (`max(a,b)` for max, `a+b` for sum), so one helper produces two
@@ -538,12 +556,12 @@ because the output is `(N, d)`, not `(N, N)`.
 
 **Integrated pipeline (example 15).** All three kernels chained on
 device, no host round-trips. One PTX module, three function handles
-(`kernel_$_scores_f32_16`, `kernel_$_softmax_f32_256`,
-`kernel_$_output_f32_16`). Per-kernel timing breaks the total down:
-scores (0.168 ms) → softmax (0.017 ms) → output (0.074 ms). The
-softmax is fast because it's a single pass over the 1 MB scores
-matrix; the matmuls are slower because they're compute-bound on small
-matrices.
+(`scores_f32_16`, `softmax_f32_256`, `output_f32_16`). Per-kernel
+timing breaks the total down:
+scores (~0.09–0.14 ms) → softmax (~0.015 ms) → output (~0.06–0.08 ms).
+The softmax is fast because it is a light, bandwidth-bound kernel:
+three short passes (max, exp-sum, normalize) over each 2 KB row; the
+matmuls are slower because they do far more work per element.
 
 End-to-end correctness: max absolute error 7e-8 across the full
 pipeline against a CPU attention reference. Errors accumulate across
@@ -566,13 +584,13 @@ See `examples/12_softmax/`, `examples/13_attention_scores/`,
 
 ## What's next
 
-The bindings cover ~30 functions now, including async transfers,
+The bindings cover 35 functions now, including async transfers,
 pinned memory, streams, and events — enough for production-grade
 kernel scheduling on a single GPU. Kernel launches are type-checked at
 compile time via `Function(Args)` and user-defined argument structs.
 Matmul sits at ~1.5 TFLOPS f32, within ~1.5-2× of cuBLAS on the same
-hardware. A vanilla attention forward pass runs end-to-end in 0.258 ms
-at N=512, d=64.
+hardware. A vanilla attention forward pass runs its three kernels in
+~0.2 ms of GPU time (excluding host↔device copies) at N=512, d=64.
 
 Coming next:
 

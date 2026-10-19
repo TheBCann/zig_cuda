@@ -24,8 +24,7 @@ inline fn expf32(x: f32) f32 {
     const log2_e: f32 = 1.4426950408889634;
     const scaled = x * log2_e;
     var out: f32 = undefined;
-    asm volatile (
-        "ex2.approx.f32 %[r], %[v];"
+    asm volatile ("ex2.approx.f32 %[r], %[v];"
         : [r] "=f" (out),
         : [v] "f" (scaled),
     );
@@ -35,8 +34,7 @@ inline fn expf32(x: f32) f32 {
 /// Warp-shuffle-down. Returns lane (current_lane + offset)'s value of `val`.
 inline fn shuffleDownF32(val: f32, offset: u32) f32 {
     var out: f32 = undefined;
-    asm volatile (
-        "shfl.sync.down.b32 %[r], %[v], %[o], 0x1f, 0xffffffff;"
+    asm volatile ("shfl.sync.down.b32 %[r], %[v], %[o], 0x1f, 0xffffffff;"
         : [r] "=f" (out),
         : [v] "f" (val),
           [o] "r" (offset),
@@ -102,7 +100,7 @@ inline fn blockReduce(
 //   SCORES:  scores = (Q @ K^T) / sqrt(d)
 // ════════════════════════════════════════════════════════════════════
 
-pub fn scores_f32_16(
+export fn scores_f32_16(
     N: u32,
     d: u32,
     inv_sqrt_d: f32,
@@ -173,7 +171,7 @@ pub fn scores_f32_16(
 //   SOFTMAX:  weights = softmax(scores, axis=-1)
 // ════════════════════════════════════════════════════════════════════
 
-pub fn softmax_f32_256(
+export fn softmax_f32_256(
     N: u32,
     input: [*]addrspace(.global) const f32,
     output: [*]addrspace(.global) f32,
@@ -240,7 +238,7 @@ pub fn softmax_f32_256(
 //   OUTPUT:  output = weights @ V
 // ════════════════════════════════════════════════════════════════════
 
-pub fn output_f32_16(
+export fn output_f32_16(
     N: u32,
     d: u32,
     weights: [*]addrspace(.global) const f32,
@@ -317,17 +315,4 @@ pub fn output_f32_16(
     if (out_row < N and out_col < d) {
         output[out_row * d + out_col] = acc;
     }
-}
-
-// ════════════════════════════════════════════════════════════════════
-//   Multi-kernel DCE survival
-// ════════════════════════════════════════════════════════════════════
-
-export fn __dummy_force_emit(i: usize) *const anyopaque {
-    const ptrs = [_]*const anyopaque{
-        @ptrCast(&scores_f32_16),
-        @ptrCast(&softmax_f32_256),
-        @ptrCast(&output_f32_16),
-    };
-    return ptrs[i % 3];
 }

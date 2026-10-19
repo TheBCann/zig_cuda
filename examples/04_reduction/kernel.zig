@@ -23,10 +23,10 @@
 const BLOCK_SIZE: u32 = 256;
 
 inline fn syncBlock() void {
-    asm volatile ("bar.sync 0;" ::: .{  .memory = true });
+    asm volatile ("bar.sync 0;" ::: .{ .memory = true });
 }
 
-pub fn block_sum(
+export fn block_sum(
     n: u32,
     input: [*]addrspace(.global) const f32,
     partials: [*]addrspace(.global) f32,
@@ -59,8 +59,4 @@ pub fn block_sum(
     if (tid == 0) {
         partials[bid] = shared.data[0];
     }
-}
-
-export fn __dummy_force_emit() *const anyopaque {
-    return @ptrCast(&block_sum);
 }

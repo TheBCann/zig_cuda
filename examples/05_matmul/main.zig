@@ -39,9 +39,9 @@ pub fn main(init: std.process.Init) !void {
         C: cuda.bindings.CUdeviceptr,
     };
 
-    const module = try cuda.Module.loadData(@embedFile("kernel_ptx"));
+    const module = try cuda.Module.loadPtx(@embedFile("kernel_ptx"));
     defer module.unload();
-    const kernel = try module.getFunction(MatmulArgs, "kernel_$_matmul");
+    const kernel = try module.getFunction(MatmulArgs, "matmul");
 
     const elements: u32 = N * N;
 
@@ -107,14 +107,7 @@ pub fn main(init: std.process.Init) !void {
     try kernel.launch(.{
         .grid = .{ .x = grid_dim, .y = grid_dim },
         .block = .{ .x = TILE, .y = TILE },
-    }, .{ 
-        .M = M,
-        .N = N_arg,
-        .K = K,
-        .A = dev_a.ptr,
-        .B = dev_b.ptr,
-        .C = dev_c.ptr
-    });
+    }, .{ .M = M, .N = N_arg, .K = K, .A = dev_a.ptr, .B = dev_b.ptr, .C = dev_c.ptr });
 
     try k_end.record(null);
     try k_end.synchronize();
@@ -135,14 +128,7 @@ pub fn main(init: std.process.Init) !void {
     try kernel.launch(.{
         .grid = .{ .x = grid_dim, .y = grid_dim },
         .block = .{ .x = TILE, .y = TILE },
-    }, .{ 
-        .M = M,
-        .N = N_arg,
-        .K = K,
-        .A = dev_a.ptr,
-        .B = dev_b.ptr,
-        .C = dev_c.ptr
-    });
+    }, .{ .M = M, .N = N_arg, .K = K, .A = dev_a.ptr, .B = dev_b.ptr, .C = dev_c.ptr });
 
     try dev_c.copyToHost(host_c);
     try e_end.record(null);
