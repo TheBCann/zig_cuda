@@ -10,6 +10,7 @@
 
 const std = @import("std");
 
+/// Compile-time parameters of the softmax kernel.
 pub const Config = struct {
     /// Element type for input/output.
     T: type = f32,
@@ -21,6 +22,7 @@ pub const Config = struct {
     /// Each thread handles row_width / block_size elements.
     block_size: u32 = 256,
 
+    /// Rejects unsupported configurations with a `@compileError`.
     pub fn validate(comptime self: Config) void {
         if (self.block_size == 0 or self.block_size > 1024)
             @compileError("block_size must be in (0, 1024]");
@@ -225,6 +227,7 @@ inline fn softmaxBody(
 
 // ─── Named instantiations ──────────────────────────────────────────────
 
+/// Row-wise softmax over an `N`x`N` f32 matrix, one 256-thread block per row.
 export fn softmax_f32_256(
     N: u32,
     input: [*]addrspace(.global) const f32,
@@ -233,6 +236,8 @@ export fn softmax_f32_256(
     softmaxBody(.{ .T = f32, .accum = f32, .block_size = 256 }, N, input, output);
 }
 
+/// Row-wise softmax over f16 data with an f32 accumulator, one 256-thread
+/// block per row.
 export fn softmax_f16_256(
     N: u32,
     input: [*]addrspace(.global) const f16,

@@ -27,6 +27,8 @@ inline fn syncBlock() void {
     asm volatile ("bar.sync 0;" ::: .{ .memory = true });
 }
 
+/// Computes `C = A @ B` (row-major, `A` is MxK, `B` is KxN) using 16x16
+/// shared-memory tiles, one output element per thread.
 export fn matmul(
     M: u32,
     N: u32,

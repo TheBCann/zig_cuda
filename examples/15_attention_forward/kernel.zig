@@ -100,6 +100,7 @@ inline fn blockReduce(
 //   SCORES:  scores = (Q @ K^T) / sqrt(d)
 // ════════════════════════════════════════════════════════════════════
 
+/// Computes `scores = (Q @ K^T) * inv_sqrt_d` with 16x16 tiles.
 export fn scores_f32_16(
     N: u32,
     d: u32,
@@ -171,6 +172,7 @@ export fn scores_f32_16(
 //   SOFTMAX:  weights = softmax(scores, axis=-1)
 // ════════════════════════════════════════════════════════════════════
 
+/// Row-wise softmax of `input` into `output`, one 256-thread block per row.
 export fn softmax_f32_256(
     N: u32,
     input: [*]addrspace(.global) const f32,
@@ -238,6 +240,7 @@ export fn softmax_f32_256(
 //   OUTPUT:  output = weights @ V
 // ════════════════════════════════════════════════════════════════════
 
+/// Computes `output = weights @ V` with 16x16 tiles.
 export fn output_f32_16(
     N: u32,
     d: u32,

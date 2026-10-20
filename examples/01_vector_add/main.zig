@@ -1,3 +1,7 @@
+//! Minimal launch: adds two 1M-element vectors on the GPU and checks every
+//! element against the CPU sum. Start here; every other example follows
+//! this init -> context -> loadPtx -> getFunction -> launch -> copy shape.
+
 const std = @import("std");
 const cuda = @import("cuda");
 

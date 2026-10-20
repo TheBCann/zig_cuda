@@ -16,6 +16,8 @@
 
 const std = @import("std");
 
+/// Compile-time parameters of a matmul kernel: element type, accumulator
+/// type and tile sizes.
 pub const Config = struct {
     /// Input and output element type.
     T: type,
@@ -26,6 +28,7 @@ pub const Config = struct {
     tile_n: u32,
     tile_k: u32,
 
+    /// Rejects unsupported configurations with a `@compileError`.
     pub fn validate(comptime self: Config) void {
         if (self.tile_m == 0 or self.tile_n == 0 or self.tile_k == 0)
             @compileError("tile dimensions must be > 0");
@@ -125,6 +128,7 @@ inline fn matmulBody(
 
 // ─── Named instantiations ────────────────────────────────────────────────
 
+/// f32 matmul with 8x8 tiles.
 export fn matmul_f32_8x8(
     M: u32,
     N: u32,
@@ -136,6 +140,7 @@ export fn matmul_f32_8x8(
     matmulBody(.{ .T = f32, .tile_m = 8, .tile_n = 8, .tile_k = 8 }, M, N, K, A, B, C);
 }
 
+/// f32 matmul with 16x16 tiles.
 export fn matmul_f32_16x16(
     M: u32,
     N: u32,
@@ -147,6 +152,7 @@ export fn matmul_f32_16x16(
     matmulBody(.{ .T = f32, .tile_m = 16, .tile_n = 16, .tile_k = 16 }, M, N, K, A, B, C);
 }
 
+/// f32 matmul with 32x32 tiles.
 export fn matmul_f32_32x32(
     M: u32,
     N: u32,

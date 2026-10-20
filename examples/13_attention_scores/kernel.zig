@@ -9,6 +9,7 @@
 
 const std = @import("std");
 
+/// Compile-time parameters of the attention-scores kernel.
 pub const Config = struct {
     /// Element type for Q, K, and scores.
     T: type = f32,
@@ -18,6 +19,7 @@ pub const Config = struct {
     /// Each thread computes one output element. Default 16 = 256 threads/block.
     tile: u32 = 16,
 
+    /// Rejects unsupported configurations with a `@compileError`.
     pub fn validate(comptime self: Config) void {
         if (self.tile == 0 or self.tile > 32)
             @compileError("tile must be in (0, 32]");
@@ -122,6 +124,7 @@ inline fn scoresBody(
 
 // ─── Named instantiation ───────────────────────────────────────────────
 
+/// Computes `scores = (Q @ K^T) * inv_sqrt_d` with 16x16 tiles.
 export fn scores_f32_16(
     N: u32,
     d: u32,

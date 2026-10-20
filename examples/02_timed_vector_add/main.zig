@@ -1,3 +1,7 @@
+//! Vector add timed both ways: the kernel alone with CUDA events, and the
+//! same work on the CPU with the host clock. One launch with no warm-up, so
+//! the GPU number includes clock ramp-up from idle.
+
 const std = @import("std");
 const cuda = @import("cuda");
 

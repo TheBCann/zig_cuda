@@ -1,6 +1,8 @@
-//! Device code. Compiled to PTX with -target nvptx64-cuda-none -mcpu=sm_75.
-//! Don't import std here — there's no host runtime available device-side.
+//! Device code, compiled to PTX by build.zig's `addKernel` (nvptx64-cuda,
+//! sm_75, .fast). std's pure parts (math, comptime helpers) work here, but
+//! nothing that needs an operating system does: no allocator, files or I/O.
 
+/// Computes `out[i] = x[i] + y[i]` for `i < n`, one element per thread.
 export fn vector_add(
     n: u32,
     x: [*]addrspace(.global) const f32,

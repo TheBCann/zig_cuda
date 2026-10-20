@@ -22,6 +22,8 @@ inline fn syncBlock() void {
     asm volatile ("bar.sync 0;" ::: .{ .memory = true });
 }
 
+/// Register-blocked matmul: 64x64 block tile, each thread computes a 4x4
+/// patch of `C` with `@mulAdd` FMAs.
 export fn matmul_reg(
     M: u32,
     N: u32,

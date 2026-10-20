@@ -55,6 +55,8 @@ inline fn warpReduceSum(initial: f32) f32 {
     return v;
 }
 
+/// Like example 06's `block_sum`, but the last steps of the reduction use warp
+/// shuffles instead of shared memory and barriers.
 export fn block_sum(
     n: u32,
     input: [*]addrspace(.global) const f32,

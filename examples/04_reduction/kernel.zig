@@ -1,4 +1,4 @@
-//! Block-level sum redirection
+//! Block-level sum reduction.
 //!
 //! Each block reduces BLOCK_SIZE consecutive elements of the input
 //! array down to a single partial sum, written to `partials[blockIdx]`.
@@ -8,7 +8,7 @@
 //!
 //! Algorithm (classic tree reduction inside shared memory)
 //!
-//!     step 0:  load: shared[tid] = input[global_idx]
+//!     Step 0:  load: shared[tid] = input[global_idx]
 //!     Barrier
 //!     Step 1:  if tid < 128: shared[tid] += shared[tid + 128]
 //!     Barrier
@@ -18,14 +18,17 @@
 //!     Step 8:  if tid < 1:   shared[tid] += shared[tid + 1]
 //!     Barrier
 //!     Write:   if tid == 0:  partials[blockIdx] = shared[0]
-//! Afer log2(BLOCK_SIZE) = 8 steps, shared[0] holds the sum of
-//! all 256 elements this block was assigned
+//!
+//! After log2(BLOCK_SIZE) = 8 steps, shared[0] holds the sum of all 256
+//! elements this block was assigned.
 const BLOCK_SIZE: u32 = 256;
 
 inline fn syncBlock() void {
     asm volatile ("bar.sync 0;" ::: .{ .memory = true });
 }
 
+/// Sums one block's slice of `input` with a shared-memory tree reduction and
+/// writes the block's total to `partials[block]`.
 export fn block_sum(
     n: u32,
     input: [*]addrspace(.global) const f32,
