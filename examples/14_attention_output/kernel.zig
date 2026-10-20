@@ -9,6 +9,7 @@
 
 const std = @import("std");
 
+/// Compile-time parameters of the attention-output kernel.
 pub const Config = struct {
     T: type = f32,
     accum: type = f32,
@@ -18,6 +19,7 @@ pub const Config = struct {
     /// shared memory each iteration of the outer loop.
     tile_k: u32 = 16,
 
+    /// Rejects unsupported configurations with a `@compileError`.
     pub fn validate(comptime self: Config) void {
         if (self.tile == 0 or self.tile > 32)
             @compileError("tile must be in (0, 32]");
@@ -131,6 +133,7 @@ inline fn outputBody(
 
 // ─── Named instantiation ───────────────────────────────────────────────
 
+/// Computes `output = weights @ V` with 16x16 tiles.
 export fn output_f32_16(
     N: u32,
     d: u32,

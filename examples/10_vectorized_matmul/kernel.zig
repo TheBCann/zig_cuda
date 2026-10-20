@@ -14,12 +14,19 @@ inline fn syncBlock() void {
 }
 
 /// Vectorized load of the two adjacent f32s at `ptr[0]` and `ptr[1]`.
-/// `ptr` must be 8-byte aligned (the alignment of @Vector(2, f32)).
+/// `ptr` must be 8-byte aligned (the alignment of `@Vector(2, f32)`). At
+/// `.fast`, the only mode build.zig uses, this lowers to one
+/// `ld.global.v2.b32` (LDG.E.64 in SASS) with no check, and a misaligned
+/// address faults. At `.safe`/`.debug`, `@alignCast` adds a GPU-side check
+/// that branches to `trap`. Callers keep the offset even, and K = 1024 keeps
+/// rows aligned.
 inline fn loadV2(ptr: [*]addrspace(.global) const f32) @Vector(2, f32) {
     const vp: *addrspace(.global) const @Vector(2, f32) = @ptrCast(@alignCast(ptr));
     return vp.*;
 }
 
+/// Tiled matmul like example 05 with a 32-wide K tile, loading two A elements
+/// per instruction through `loadV2`.
 export fn matmul_vec(
     M: u32,
     N: u32,

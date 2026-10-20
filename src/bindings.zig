@@ -4,20 +4,39 @@
 //! cuDeviceTotalMem_v2, cuCtxSetCurrent, cuMemsetD8_v2, cuMemsetD32_v2);
 //! add more as needed.
 //!
+//! Conventions a maintainer must keep:
+//!   - Bind the `_v2` symbols (`cuCtxCreate_v2`, `cuMemAlloc_v2`, ...)
+//!     wherever cuda.h `#define`s the plain name to them. The plain names
+//!     are legacy 32-bit-pointer entry points that only exist for ABI
+//!     compatibility.
+//!   - Every declaration is `extern "cuda"`. Zig only accepts a named
+//!     dynamic library in a PIC module, so build.zig creates the `cuda`
+//!     module with `.pic = true`. Since Zig PR #36532, `-lcuda` alone does
+//!     not satisfy that check.
+//!   - `CUresult` is non-exhaustive. Values must match cuda.h exactly; they
+//!     were checked against CUDA 13.3 (`CUDA_VERSION 13030`). A wrong value
+//!     silently turns a real error into `error.Unknown`.
+//!   - CI generates its stub libcuda from the `extern ... fn` names here, so
+//!     a new binding needs no CI change.
+//!
 //! Reference: https://docs.nvidia.com/cuda/cuda-driver-api/
 
 const std = @import("std");
 
 // ── Opaque handle types ──────────────────────────────────────────────────
+/// Device ordinal handle, as returned by `cuDeviceGet`.
 pub const CUdevice = c_int;
 pub const CUcontext = ?*opaque {};
 pub const CUmodule = ?*opaque {};
 pub const CUfunction = ?*opaque {};
 pub const CUstream = ?*opaque {};
 pub const CUevent = ?*opaque {};
-pub const CUdeviceptr = u64; // 64-bit on all supported platforms
+/// Device memory address. 64-bit on all supported platforms.
+pub const CUdeviceptr = u64;
 
 // ── Result codes (subset; expand from cuda.h as needed) ──────────────────
+/// Driver API status code (subset of `CUresult` in cuda.h). The enum is
+/// non-exhaustive because the driver may return codes not named here.
 pub const CUresult = enum(c_int) {
     success = 0,
     invalid_value = 1,
@@ -66,11 +85,11 @@ pub const CUresult = enum(c_int) {
     _, // open enum — driver may return codes we haven't mapped
 };
 
-/// ── Initialization ───────────────────────────────────────────────────────
+// ── Initialization ───────────────────────────────────────────────────────
 pub extern "cuda" fn cuInit(flags: c_uint) CUresult;
 pub extern "cuda" fn cuDriverGetVersion(driver_version: *c_int) CUresult;
 
-/// ── Device management ────────────────────────────────────────────────────
+// ── Device management ────────────────────────────────────────────────────
 pub extern "cuda" fn cuDeviceGet(device: *CUdevice, ordinal: c_int) CUresult;
 pub extern "cuda" fn cuDeviceGetCount(count: *c_int) CUresult;
 pub extern "cuda" fn cuDeviceGetName(
@@ -83,7 +102,7 @@ pub extern "cuda" fn cuDeviceTotalMem_v2(
     dev: CUdevice,
 ) CUresult;
 
-/// ── Context management ──────────────────────────────────────────────────
+// ── Context management ──────────────────────────────────────────────────
 // NOTE: _v2 versions are the canonical ABI symbols. Without _v2 you
 // link against legacy 32-bit-pointer stubs. Always use _v2.
 pub extern "cuda" fn cuCtxCreate_v2(
@@ -181,15 +200,16 @@ pub extern "cuda" fn cuMemcpyDtoHAsync_v2(
 ) CUresult;
 
 // ── Pinned (page-locked) host memory ────────────────────────────────────
-// Pinned memory cannot be paged out by the OS. DMA can read it directly
-// without the driver having to first copy through a hidden staging buffer.
-// Result: ~2x faster HtoD/DtoH transfers. Trade-off: pinned memory is a
-// limited OS resource; don't allocate gigabytes of it.
-//
-// Flags: CU_MEMHOSTALLOC_PORTABLE = 0x01 (visible to all CUDA contexts)
-//        CU_MEMHOSTALLOC_DEVICEMAP = 0x02 (also mappable into device addr space)
-//        CU_MEMHOSTALLOC_WRITECOMBINED = 0x04 (write-combined, faster HtoD)
-// For typical use, flags = 0 is correct.
+
+/// Allocates `bytesize` bytes of pinned (page-locked) host memory. The OS
+/// cannot page it out, so DMA reads it directly without the driver's hidden
+/// staging copy: roughly 2x faster host<->device transfers. Pinned memory is
+/// a limited OS resource; don't allocate gigabytes of it.
+///
+/// `flags` (0 is right for typical use):
+///   CU_MEMHOSTALLOC_PORTABLE = 0x01 (visible to all CUDA contexts)
+///   CU_MEMHOSTALLOC_DEVICEMAP = 0x02 (also mappable into device address space)
+///   CU_MEMHOSTALLOC_WRITECOMBINED = 0x04 (write-combined, faster host-to-device)
 pub extern "cuda" fn cuMemHostAlloc(
     pp: *?*anyopaque,
     bytesize: usize,
@@ -197,10 +217,10 @@ pub extern "cuda" fn cuMemHostAlloc(
 ) CUresult;
 pub extern "cuda" fn cuMemFreeHost(p: *anyopaque) CUresult;
 
-/// Events
-/// CU_EVENT_DEFAULT = 0,
-/// CU_EVENT_BLOCKING_SYNC = 1,
-/// CU_EVENT_DISABLE_TIMING = 2
+// ── Events ──────────────────────────────────────────────────────────────
+
+/// Creates an event. `flags`: CU_EVENT_DEFAULT = 0, CU_EVENT_BLOCKING_SYNC = 1,
+/// CU_EVENT_DISABLE_TIMING = 2.
 pub extern "cuda" fn cuEventCreate(
     event: *CUevent,
     flags: c_uint,

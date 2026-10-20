@@ -1,8 +1,9 @@
-//! Reduction example: sum N floats on the GPU.
+//! Reduction v3 host code: sum N floats on the GPU.
 //!
-//! Each block reduces 256 elements to one partial sum via shared memory
-//! tree reduction. The host then sums the (much smaller) partials array
-//! on the CPU. Input is all 1.0s so the expected total is exactly N.
+//! Same 512-elements-per-block layout as v2, but the last five steps of each
+//! block's reduction run inside a warp with `shfl.sync.down.b32`, which needs
+//! no shared memory and no barriers. The host sums the per-block partials on
+//! the CPU. Input is all 1.0s, so the expected total is exactly N.
 
 const std = @import("std");
 const cuda = @import("cuda");

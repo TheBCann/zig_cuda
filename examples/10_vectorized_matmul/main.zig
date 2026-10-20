@@ -1,4 +1,9 @@
-//! Tiled matmul example.
+//! Vectorized tiled matmul host code (example 10).
+//!
+//! Same workload and check as example 05, run against the kernel that loads
+//! A two floats per instruction through `@Vector(2, f32)`. It lands at about
+//! example 05's speed: global loads were not this kernel's bottleneck (see
+//! the README's register-blocked matmul section).
 //!
 //! Multiplies two N×N matrices of all-ones. Expected output: every
 //! cell of C equals K (= N for square). Easy correctness check, and

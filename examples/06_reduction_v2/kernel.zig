@@ -25,6 +25,8 @@ inline fn syncBlock() void {
     asm volatile ("bar.sync 0;" ::: .{ .memory = true });
 }
 
+/// Like example 04's `block_sum`, but each thread adds two elements while
+/// loading, so each block covers twice as much input.
 export fn block_sum(
     n: u32,
     input: [*]addrspace(.global) const f32,

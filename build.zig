@@ -1,3 +1,24 @@
+//! Build script for zig_cuda: the public `cuda` runtime module, the
+//! `addKernel`/`linkCuda` helpers that consumers call from their own
+//! build.zig, and the 15 examples.
+//!
+//! Every example is built the same way:
+//!
+//!   kernel.zig --addKernel--> PTX text (nvptx64-cuda, sm_75, always .fast)
+//!                               |
+//!                               | addAnonymousImport("kernel_ptx")
+//!                               v
+//!   main.zig ---- @embedFile("kernel_ptx") --> host exe --linkCuda--> libcuda
+//!
+//! At run time the host calls `Module.loadPtx`, and the NVIDIA driver
+//! JIT-compiles the embedded PTX to machine code for the installed GPU.
+//!
+//! Host executables default to the native CPU on a linux-gnu target that
+//! is named explicitly. Naming it keeps the link hermetic, because Zig
+//! then uses its own crt files and glibc stubs rather than the host's.
+//! Kernels ignore `-Doptimize`, so the GPU code is identical in every
+//! host build mode.
+
 const std = @import("std");
 
 // ════════════════════════════════════════════════════════════════════
@@ -35,6 +56,7 @@ pub const SmArch = enum {
     sm_90a,
 };
 
+/// Options for `addKernel`.
 pub const KernelOptions = struct {
     /// Identifier for the kernel object (used in cache paths).
     name: []const u8,
@@ -78,6 +100,7 @@ pub fn addKernel(b: *std.Build, opts: KernelOptions) *std.Build.Step.Compile {
     });
 }
 
+/// Options for `linkCuda`.
 pub const LinkOptions = struct {
     /// CUDA installation whose `lib/stubs/libcuda.so` satisfies the link; at
     /// runtime the driver's own libcuda.so.1 is loaded instead. Absolute, or
@@ -113,6 +136,8 @@ pub fn linkCuda(exe: *std.Build.Step.Compile, opts: LinkOptions) void {
 //
 // ════════════════════════════════════════════════════════════════════
 
+/// Builds the 15 examples and the `run-NN`/`run-all` steps, and exposes the
+/// `cuda` module to consumers.
 pub fn build(b: *std.Build) void {
     // Native CPU so the CPU reference loops use the host's SIMD (AVX2 etc.);
     // naming linux-gnu explicitly keeps the link hermetic (Zig-built crt
