@@ -19,13 +19,13 @@ self-contained executable.
 Working on:
 
 - Zig 0.17.0 or newer. Tested on the 0.17.0 release and on nightlies
-  0.18.0-dev.291+13ee14043 and 0.18.0-dev.349+d924f83bf. Nightlies
+  0.18.0-dev.974+598176dbb and 0.18.0-dev.1124+2ecf4b5e2. Nightlies
   0.18.0-dev.287 through 0.18.0-dev.295 have a Zig bug (fixed in
   dev.296 by Zig commit `156ab92d9d`, 2026-10-15) that breaks using this
   package as a dependency; the examples themselves still build and run
   there.
-- Arch Linux, kernel 7.2, NVIDIA driver 610.57.04 via `nvidia-open-dkms`,
-  CUDA 13.3
+- Arch Linux, kernel 7.2, NVIDIA driver 615.78.08 via `nvidia-open-dkms`,
+  CUDA 13.4
 - GTX 1660 Ti (Turing, sm_75)
 
 ## Using as a dependency
@@ -124,7 +124,7 @@ newer) only support sm_75 and newer.
 zig build                                                       # build everything
 zig build run-all                                               # run + verify all 15 (each exits nonzero on bad results)
 zig build run-01_vector_add                                     # minimal launch
-zig build run-02_timed_vector_add                               # kernel-only timing
+zig build run-02_timed_vector_add                               # kernel-only timing (warm-up + median)
 zig build run-03_pcie_truth              -Doptimize=safe        # honest end-to-end timing
 zig build run-04_reduction               -Doptimize=safe        # reduction v1 (tree)
 zig build run-05_matmul                  -Doptimize=safe        # tiled matmul
@@ -133,7 +133,7 @@ zig build run-07_reduction_v3            -Doptimize=safe        # reduction v3 (
 zig build run-08_streams                 -Doptimize=safe        # pinned + async streams
 zig build run-09_comptime_matmul         -Doptimize=safe        # 4 PTX kernels from one source
 zig build run-10_vectorized_matmul       -Doptimize=safe        # @Vector(2, f32) cooperative loads
-zig build run-11_register_blocked_matmul -Doptimize=safe        # 4x4 register tile per thread (1.5 TFLOPS)
+zig build run-11_register_blocked_matmul -Doptimize=safe        # 4x4 register tile per thread (2.1 TFLOPS)
 zig build run-12_softmax                 -Doptimize=safe        # row-wise stable softmax
 zig build run-13_attention_scores        -Doptimize=safe        # scores = (Q @ K^T) / sqrt(d)
 zig build run-14_attention_output        -Doptimize=safe        # output = weights @ V
@@ -161,16 +161,16 @@ src/
   cuda.zig                         # idiomatic Zig wrappers (Device, Context, Module, ...)
 examples/
   01_vector_add/                   # minimal launch + correctness check
-  02_timed_vector_add/             # kernel-only timing via CUDA events
+  02_timed_vector_add/             # kernel-only timing with cuda.Bench (warm-up, then a median)
   03_pcie_truth/                   # honest end-to-end timing (PCIe overhead exposed)
   04_reduction/                    # shared-memory tree reduction (sum) — baseline
   05_matmul/                       # tiled 2D matrix multiply (the GPU-shines example)
-  06_reduction_v2/                 # halve threads, double loads at boundary (1.7× faster)
-  07_reduction_v3/                 # warp-shuffle reduction (1.7× faster again, ~3× over v1)
-  08_streams/                      # pinned host memory + 2-stream pipelining (1.78× speedup)
+  06_reduction_v2/                 # halve threads, double loads at boundary (1.8× faster)
+  07_reduction_v3/                 # warp-shuffle reduction (1.4× faster again, 2.6× over v1)
+  08_streams/                      # pinned host memory + 2-stream pipelining (1.8× speedup)
   09_comptime_matmul/              # 4 specialized kernels (f32×3, f16×1) from one source
   10_vectorized_matmul/            # @Vector(2, f32) cooperative loads (global loads weren't the bottleneck)
-  11_register_blocked_matmul/      # 4×4 register tile per thread (1.5 TFLOPS, 2.7× over simple tiled)
+  11_register_blocked_matmul/      # 4×4 register tile per thread (2.1 TFLOPS, 2.8× over simple tiled)
   12_softmax/                      # row-wise numerically stable softmax (warp-shuffle reductions)
   13_attention_scores/             # scores = (Q @ K^T) / sqrt(d), K^T via shared-memory transpose
   14_attention_output/             # output = weights @ V, tiled matmul with non-square grid
@@ -329,29 +329,39 @@ a single `ld.global.v2`.
 
 ## Performance
 
-Measured on a GTX 1660 Ti, i7-9700K, PCIe Gen3 x16, with
-`-Doptimize=safe`. Figures come from single runs with no warm-up (the
-15_forward row summarizes several): GPU numbers are CUDA-event timings
-(kernel only, or copies plus kernels for the end-to-end and streams
-rows), CPU numbers use the host monotonic clock. Expect 2–5×
-run-to-run variation on the GPU side depending on clock state, and more
-on a loaded CPU; treat the numbers as indicative, not as benchmarks.
-Most were recorded on earlier Zig nightlies; the 15_forward row was
-re-measured on 0.18.0-dev.
+Measured on a GTX 1660 Ti (driver 615.78), i7-9700K, PCIe Gen3 x16,
+with `-Doptimize=safe` on Zig 0.18.0-dev.974.
+
+**How the GPU figures are timed.** Every example times its GPU work
+with `cuda.Bench`: it repeats the work untimed for 400 ms, then reports
+the median of 20 repetitions timed with CUDA events (kernel only, or
+copies plus kernels for the end-to-end and streams rows). The warm-up
+matters. A compute-bound kernel launched once on an idle GPU runs at
+the card's idle clocks: example 11's matmul took 1.35 ms per launch for
+the first ~300 ms of load and 1.03 ms after that, so a single launch
+under-reported its speed by about a quarter. Memory-bound kernels such
+as vector add measured the same either way. Across three runs of each
+example, the kernel-only figures below repeated to within 1% (or to the
+last printed digit, for those under 0.1 ms), and figures that include
+host copies to within about 4%.
+
+**CPU figures** are single runs of a simple single-threaded reference
+on the host monotonic clock. They exist to check the GPU's results, not
+to be a tuned CPU baseline, so read the "× vs CPU" ratios accordingly.
 
 ### Vector add (worst-case workload)
 
 For vector add, N = 16M elements (64 MB per buffer):
 
 ```
-CPU (AVX2 reference):       13.8 ms
-GPU kernel only:            0.9 ms   (16× vs CPU)
-GPU end-to-end (w/ PCIe):   25.3 ms  (0.5× vs CPU)
-PCIe transfer overhead:     24.4 ms  (97% of end-to-end)
+CPU (AVX2 reference):       10.1 ms
+GPU kernel only:            0.81 ms  (12× vs CPU)
+GPU end-to-end (w/ PCIe):   21.7 ms  (0.5× vs CPU)
+PCIe transfer overhead:     20.9 ms  (96% of end-to-end)
 ```
 
 Vector add has arithmetic intensity 0.083 FLOPs/byte — the worst
-possible case for GPU advantage. The kernel itself runs 16× faster than
+possible case for GPU advantage. The kernel itself runs 12× faster than
 the CPU, but PCIe transfers dominate the end-to-end time so heavily
 that the GPU loses on a single-shot operation.
 
@@ -362,9 +372,9 @@ See `examples/03_pcie_truth/main.zig` for the full benchmark.
 For 1024×1024×1024 matrix multiply (tiled, TILE=16):
 
 ```
-CPU naive triple loop:  1364 ms   (1.6 GFLOPS)
-GPU kernel only:        3.8 ms    (560 GFLOPS, 356× vs CPU)
-GPU end-to-end:         5.8 ms    (237× vs CPU)
+CPU naive triple loop:  1280 ms   (1.7 GFLOPS)
+GPU kernel only:        2.90 ms   (741 GFLOPS, 440× vs CPU)
+GPU end-to-end:         4.2 ms    (300× vs CPU)
 ```
 
 Tiled matmul has arithmetic intensity ~16 FLOPs/byte — high enough that
@@ -381,17 +391,17 @@ For 1M-element f32 sum reduction (N = 1 << 20), three successive
 kernel rewrites:
 
 ```
-CPU loop (scalar f64 sum):    0.9 ms
-GPU v1 (tree reduction):      0.074 ms   (12× vs CPU)
-GPU v2 (halve threads):       0.043 ms   (21× vs CPU)
-GPU v3 (warp shuffles):       0.025 ms   (37× vs CPU)
+CPU loop (scalar f64 sum):    0.90 ms
+GPU v1 (tree reduction):      0.049 ms   (18× vs CPU)
+GPU v2 (halve threads):       0.028 ms   (33× vs CPU)
+GPU v3 (warp shuffles):       0.019 ms   (47× vs CPU)
 ```
 
-**v1 → v2 (1.7×):** each thread loads two elements and adds at load
+**v1 → v2 (1.8×):** each thread loads two elements and adds at load
 time, so a block covers 2× the input. Half the launch overhead, half
 the wasted threads. Structural improvement, not just a tweak.
 
-**v2 → v3 (1.7×):** the in-warp portion of the reduction (5 of 8
+**v2 → v3 (1.4×):** the in-warp portion of the reduction (5 of 8
 steps) drops all shared-memory traffic and barriers, replaced by
 `shfl.sync.down.b32` warp-level register exchanges. One cycle per step
 instead of ~60.
@@ -405,9 +415,9 @@ For 16M-element f32 vector add (the same workload from example 03),
 with async streams and pinned memory:
 
 ```
-Sync baseline (pageable, default stream):   22.1 ms   ( 9.1 GB/s)
+Sync baseline (pageable, default stream):   21.8 ms   ( 9.2 GB/s)
 Streamed (pinned, 2 streams, 4 chunks):     12.4 ms   (16.2 GB/s)
-Speedup: 1.78×
+Speedup: 1.76×
 ```
 
 The kernel itself is unchanged — what changed is how transfers and
@@ -432,10 +442,10 @@ For 1024×1024×1024 matmul, four kernels generated from one Zig source
 via comptime specialization:
 
 ```
-[ f32   8×8×8  ]  →  6.94 ms   (309 GFLOPS)
-[ f32  16×16×16]  →  3.88 ms   (554 GFLOPS)
-[ f32  32×32×32]  →  3.71 ms   (579 GFLOPS)
-[ f16  16×16×16]  →  3.53 ms   (609 GFLOPS, f32 accumulator)
+[ f32   8×8×8  ]  →  4.54 ms   (473 GFLOPS)
+[ f32  16×16×16]  →  2.89 ms   (742 GFLOPS)
+[ f32  32×32×32]  →  2.81 ms   (764 GFLOPS)
+[ f16  16×16×16]  →  2.62 ms   (820 GFLOPS, f32 accumulator)
 ```
 
 The f16 variant uses an f32 accumulator (the standard mixed-precision
@@ -445,9 +455,10 @@ from one Zig source. A compile-time `@compileError` rejects degenerate
 combinations like "f32 inputs with f16 accumulator" before any kernel
 gets emitted.
 
-The f16 kernel matches or slightly beats the best f32 config on this
-hardware despite the 1660 Ti having no tensor cores. The wins are structural: half the
-shared memory per tile, half the bandwidth per load. This kernel
+The f16 kernel is the fastest of the four on this hardware, about 7%
+ahead of the best f32 config, despite the 1660 Ti having no tensor
+cores. The wins are structural: half the shared memory per tile, half
+the bandwidth per load. This kernel
 converts every f16 to f32 and does plain f32 multiplies and adds (no
 `mma`/`wmma`), so tensor-core GPUs would not widen the f16 gap; only a
 kernel rewritten around `mma.sync`/`wmma` would use those units.
@@ -468,14 +479,14 @@ clear winner.
 **Example 10 — vectorized cooperative loads.** Replace per-element
 scalar loads with `@Vector(2, f32)` loads, which compile to one
 `ld.global.v2` instruction per two f32s. Doubled K-direction tile
-(16 → 32) to absorb the wider loads. Result: 561 GFLOPS — essentially
-identical to the baseline.
+(16 → 32) to absorb the wider loads. Result: 745 GFLOPS — essentially
+identical to the baseline's 741.
 
 Global memory was not the limit. Per K-tile each thread issues only
 ~3 global loads (one `ld.global.v2` for A, two scalar loads for B,
 whose column-direction access can't be vectorized) against 32
 multiply-adds, so widening some of them barely moved the needle. The
-real ceiling at ~560 GFLOPS (about 10% of the 1660 Ti's ~5.6 TFLOPS
+real ceiling at ~740 GFLOPS (about 13% of the 1660 Ti's ~5.6 TFLOPS
 FP32 peak) is the inner product's 2 shared-memory loads per
 multiply-add, which example 11 attacks.
 
@@ -483,27 +494,30 @@ multiply-add, which example 11 attacks.
 4×4 tile of C in registers instead of one element. Inner loop: 8
 shared-memory loads + 16 FMAs per K iteration (vs 2 loads + 1 FMA in
 the simple version). Loads-per-FMA ratio drops from 2.0 to 0.5, which
-lifts the kernel to ~1.5 TFLOPS (about a quarter of FP32 peak).
+lifts the kernel to ~2.1 TFLOPS (about 37% of FP32 peak).
 
 Plus: `@mulAdd(f32, ...)` forces emission of `fma.rn.f32` instead of
 the compiler's default `mul.rn.f32` + `add.rn.f32` (one rounding step
 instead of two, one cycle instead of two).
 
 ```
-[ Simple tiled 16×16          ]  →  3.85 ms   (554 GFLOPS)
-[ Comptime 32×32              ]  →  3.71 ms   (579 GFLOPS)
-[ Vectorized v2 loads         ]  →  3.83 ms   (561 GFLOPS)
-[ Register-blocked 4×4 + FMA  ]  →  1.43 ms   (1495 GFLOPS)
+[ Simple tiled 16×16          ]  →  2.90 ms   (741 GFLOPS)
+[ Comptime 32×32              ]  →  2.81 ms   (764 GFLOPS)
+[ Vectorized v2 loads         ]  →  2.88 ms   (745 GFLOPS)
+[ Register-blocked 4×4 + FMA  ]  →  1.03 ms   (2083 GFLOPS)
+[ cuBLAS SGEMM, for reference ]  →  0.65 ms   (3310 GFLOPS)
 ```
 
-**2.7× speedup** from a single technique. The kernel is now within
-~1.5–2× of cuBLAS on the same hardware. Remaining gap closeable with
+**2.8× speedup** from a single technique. cuBLAS 13.8's `SGEMM`,
+timed the same way on the same card (400 ms warm-up, median of 20),
+multiplies the same matrices in 0.65 ms, so the kernel is within 1.6×
+of cuBLAS. Remaining gap closeable with
 double-buffered shared memory, vectorized cooperative loads at the
 right scale, and larger thread tiles (8×8) — each closing maybe
 15–20% more. Tensor cores would change the picture entirely but the
 1660 Ti has none.
 
-The progression as a whole — 554 → 579 → 561 → 1495 GFLOPS across
+The progression as a whole — 741 → 764 → 745 → 2083 GFLOPS across
 examples 05, 09, 10, 11 — is the real lesson. Most kernel
 optimizations don't help much. One technique you understand deeply
 makes a huge difference.
@@ -520,10 +534,10 @@ verified individually before the integrated example chains them.
 For N=512 (sequence length), d=64 (head dimension), single-head:
 
 ```
-[ 12_softmax  ]  →  0.094 ms   (53.7 GB/s, max abs err 4.8e-8)
-[ 13_scores   ]  →  0.167 ms   (201 GFLOPS, max abs err 7.5e-8)
-[ 14_output   ]  →  0.154 ms   (218 GFLOPS, max abs err 2.2e-8)
-[ 15_forward  ]  →  ~0.2 ms    (full pipeline, ~120–150× vs CPU)
+[ 12_softmax  ]  →  0.014 ms   (max abs err 4.8e-8)
+[ 13_scores   ]  →  0.068 ms   (495 GFLOPS, max abs err 7.5e-8)
+[ 14_output   ]  →  0.056 ms   (601 GFLOPS, max abs err 2.2e-8)
+[ 15_forward  ]  →  0.141 ms   (full pipeline, ~178× vs CPU)
 ```
 
 **Softmax (example 12).** Row-wise numerically stable softmax using
@@ -534,6 +548,12 @@ warp-shuffle finalization (the technique from example 07_reduction_v3).
 available), so the kernel computes `e^x = 2^(x * log2(e))` with inline
 PTX `ex2.approx.f32`; `@exp2(x * log2(e))` would now produce the same
 instructions.
+
+The example also prints an "effective GB/s" figure that counts every
+pass's reads and writes (5 × 1 MB). At 0.014 ms that is 365 GB/s, more
+than the card's 288 GB/s memory bandwidth, so the repeat passes over
+each 2 KB row cannot all be reaching DRAM. Treat it as traffic counted,
+not as a memory-bandwidth measurement.
 
 The `warpReduce` helper is comptime-generic over the combine function
 (`max(a,b)` for max, `a+b` for sum), so one helper produces two
@@ -558,10 +578,10 @@ because the output is `(N, d)`, not `(N, N)`.
 device, no host round-trips. One PTX module, three function handles
 (`scores_f32_16`, `softmax_f32_256`, `output_f32_16`). Per-kernel
 timing breaks the total down:
-scores (~0.09–0.14 ms) → softmax (~0.015 ms) → output (~0.06–0.08 ms).
-The softmax is fast because it is a light, bandwidth-bound kernel:
-three short passes (max, exp-sum, normalize) over each 2 KB row; the
-matmuls are slower because they do far more work per element.
+scores (0.071 ms) → softmax (0.013 ms) → output (0.056 ms).
+The softmax is fast because it is a light kernel: three short passes
+(max, exp-sum, normalize) over each 2 KB row; the matmuls are slower
+because they do far more work per element.
 
 End-to-end correctness: max absolute error 7e-8 across the full
 pipeline against a CPU attention reference. Errors accumulate across
@@ -588,9 +608,9 @@ The bindings cover 35 functions now, including async transfers,
 pinned memory, streams, and events — enough for production-grade
 kernel scheduling on a single GPU. Kernel launches are type-checked at
 compile time via `Function(Args)` and user-defined argument structs.
-Matmul sits at ~1.5 TFLOPS f32, within ~1.5-2× of cuBLAS on the same
+Matmul sits at ~2.1 TFLOPS f32, within 1.6× of cuBLAS on the same
 hardware. A vanilla attention forward pass runs its three kernels in
-~0.2 ms of GPU time (excluding host↔device copies) at N=512, d=64.
+0.14 ms of GPU time (excluding host↔device copies) at N=512, d=64.
 
 Coming next:
 

@@ -106,65 +106,57 @@ pub fn main(init: std.process.Init) !void {
     try dev_v.copyFromHost(host_v);
 
     // ── GPU: three kernels back-to-back, per-kernel timing ───────────
-    const e_pre = try cuda.Event.create();
-    defer e_pre.deinit();
-    const e_after_scores = try cuda.Event.create();
-    defer e_after_scores.deinit();
-    const e_after_softmax = try cuda.Event.create();
-    defer e_after_softmax.deinit();
-    const e_after_output = try cuda.Event.create();
-    defer e_after_output.deinit();
-
     const scores_grid: c_uint = N / TILE;
     const output_grid_x: c_uint = D / TILE;
     const output_grid_y: c_uint = N / TILE;
 
-    try e_pre.record(null);
+    // Each repetition runs the whole pipeline; `lap` splits it into one
+    // segment per kernel.
+    var bench = try cuda.Bench.init(io, .{});
+    defer bench.deinit();
+    while (try bench.next()) {
+        // 1. scores = (Q @ K^T) / sqrt(d)
+        try scores_kernel.launch(.{
+            .grid = .{ .x = scores_grid, .y = scores_grid },
+            .block = .{ .x = TILE, .y = TILE },
+        }, .{
+            .n = N,
+            .d = D,
+            .inv_sqrt_d = inv_sqrt_d,
+            .q = dev_q.ptr,
+            .k = dev_k.ptr,
+            .scores = dev_scores.ptr,
+        });
+        try bench.lap();
 
-    // 1. scores = (Q @ K^T) / sqrt(d)
-    try scores_kernel.launch(.{
-        .grid = .{ .x = scores_grid, .y = scores_grid },
-        .block = .{ .x = TILE, .y = TILE },
-    }, .{
-        .n = N,
-        .d = D,
-        .inv_sqrt_d = inv_sqrt_d,
-        .q = dev_q.ptr,
-        .k = dev_k.ptr,
-        .scores = dev_scores.ptr,
-    });
-    try e_after_scores.record(null);
+        // 2. weights = softmax(scores)
+        try softmax_kernel.launch(.{
+            .grid = .{ .x = N },
+            .block = .{ .x = SOFTMAX_BLOCK },
+        }, .{
+            .n = N,
+            .input = dev_scores.ptr,
+            .output = dev_weights.ptr,
+        });
+        try bench.lap();
 
-    // 2. weights = softmax(scores)
-    try softmax_kernel.launch(.{
-        .grid = .{ .x = N },
-        .block = .{ .x = SOFTMAX_BLOCK },
-    }, .{
-        .n = N,
-        .input = dev_scores.ptr,
-        .output = dev_weights.ptr,
-    });
-    try e_after_softmax.record(null);
-
-    // 3. output = weights @ V
-    try output_kernel.launch(.{
-        .grid = .{ .x = output_grid_x, .y = output_grid_y },
-        .block = .{ .x = TILE, .y = TILE },
-    }, .{
-        .n = N,
-        .d = D,
-        .weights = dev_weights.ptr,
-        .v = dev_v.ptr,
-        .output = dev_output.ptr,
-    });
-    try e_after_output.record(null);
-
-    try e_after_output.synchronize();
-
-    const scores_ms = try cuda.Event.elapsed(e_pre, e_after_scores);
-    const softmax_ms = try cuda.Event.elapsed(e_after_scores, e_after_softmax);
-    const output_ms = try cuda.Event.elapsed(e_after_softmax, e_after_output);
-    const total_ms = try cuda.Event.elapsed(e_pre, e_after_output);
+        // 3. output = weights @ V
+        try output_kernel.launch(.{
+            .grid = .{ .x = output_grid_x, .y = output_grid_y },
+            .block = .{ .x = TILE, .y = TILE },
+        }, .{
+            .n = N,
+            .d = D,
+            .weights = dev_weights.ptr,
+            .v = dev_v.ptr,
+            .output = dev_output.ptr,
+        });
+    }
+    const timing = bench.total();
+    const scores_ms = bench.segment(0).median_ms;
+    const softmax_ms = bench.segment(1).median_ms;
+    const output_ms = bench.segment(2).median_ms;
+    const total_ms = timing.median_ms;
 
     try dev_output.copyToHost(host_output);
 
@@ -192,6 +184,9 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("  output  : {d:.3} ms\n", .{output_ms});
     std.debug.print("  ─────────\n", .{});
     std.debug.print("  total   : {d:.3} ms\n", .{total_ms});
+    std.debug.print("  (medians of {d} runs after a {d} ms warm-up; total min {d:.3}, max {d:.3} ms)\n", .{
+        timing.runs, bench.opts.warmup_ms, timing.min_ms, timing.max_ms,
+    });
 
     std.debug.print("\nCorrectness vs CPU reference (full forward pass):\n", .{});
     std.debug.print("  Max absolute error: {e:.3}\n", .{max_abs_err});

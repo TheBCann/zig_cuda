@@ -26,3 +26,5 @@ pub const LaunchConfig = cuda.LaunchConfig;
 
 // Timing
 pub const Event = cuda.Event;
+pub const Timing = cuda.Timing;
+pub const Bench = cuda.Bench;

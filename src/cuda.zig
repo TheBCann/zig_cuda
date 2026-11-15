@@ -7,6 +7,8 @@
 //!   `Context` last.
 //! - `DeviceBuffer(T)` and `PinnedBuffer(T)` type memory by element.
 //!   `Function(Args)` types a kernel launch by a struct of its parameters.
+//! - `Bench` times GPU work for benchmarks: a warm-up, then the median of
+//!   repeated runs. `Event` is the raw timer underneath it.
 //!
 //! Synchronous vs asynchronous: `copyFromHost`/`copyToHost` block until
 //! they finish. `Function.launch`, the `*Async` copies and `Event.record`
@@ -18,7 +20,8 @@ const c = @import("bindings.zig");
 
 /// Errors returned by the wrappers, mapped from the driver's `CUresult`.
 /// Codes without a dedicated tag map to `error.Unknown`; use `logError` on
-/// the raw result for details.
+/// the raw result for details. `SizeOverflow` is the one error the wrappers
+/// raise themselves: a requested byte size does not fit in `usize`.
 pub const CudaError = error{
     InvalidValue,
     OutOfMemory,
@@ -39,6 +42,7 @@ pub const CudaError = error{
     LaunchOutOfResources,
     LaunchTimeout,
     UnsupportedPtxVersion,
+    SizeOverflow,
     Unknown,
 };
 
@@ -199,10 +203,14 @@ pub fn DeviceBuffer(comptime T: type) type {
 
         const Self = @This();
 
-        /// Allocates device memory for `n` elements.
+        /// Allocates device memory for `n` elements. Returns
+        /// `error.SizeOverflow` if `n * @sizeOf(T)` overflows `usize`.
         pub fn alloc(n: usize) CudaError!Self {
+            const bytes = std.math.mul(usize, n, @sizeOf(T)) catch
+                return error.SizeOverflow;
+
             var p: c.CUdeviceptr = 0;
-            try toErr(c.cuMemAlloc_v2(&p, n * @sizeOf(T)));
+            try toErr(c.cuMemAlloc_v2(&p, bytes));
             return .{ .ptr = p, .len = n };
         }
 
@@ -292,10 +300,14 @@ pub fn PinnedBuffer(comptime T: type) type {
 
         const Self = @This();
 
-        /// Allocates pinned host memory for `n` elements.
+        /// Allocates pinned host memory for `n` elements. Returns
+        /// `error.SizeOverflow` if `n * @sizeOf(T)` overflows `usize`.
         pub fn alloc(n: usize) CudaError!Self {
+            const bytes = std.math.mul(usize, n, @sizeOf(T)) catch
+                return error.SizeOverflow;
+
             var raw: ?*anyopaque = null;
-            try toErr(c.cuMemHostAlloc(&raw, n * @sizeOf(T), 0));
+            try toErr(c.cuMemHostAlloc(&raw, bytes, 0));
             return .{
                 .ptr = @ptrCast(@alignCast(raw.?)),
                 .len = n,
@@ -388,7 +400,9 @@ pub fn Function(comptime Args: type) type {
 }
 
 /// CUDA event for timing GPU work. Pair two of them around a kernel
-/// launch and call `elapsed` to get milliseconds between them.
+/// launch and call `elapsed` to get milliseconds between them. One such
+/// measurement on an idle GPU is not representative; use `Bench` for
+/// numbers worth quoting.
 pub const Event = struct {
     handle: c.CUevent,
 
@@ -421,5 +435,201 @@ pub const Event = struct {
         var ms: f32 = 0;
         try toErr(c.cuEventElapsedTime(&ms, start.handle, end.handle));
         return ms;
+    }
+};
+
+/// Summary of repeated timings, in milliseconds.
+pub const Timing = struct {
+    /// Median of the timed runs.
+    median_ms: f32,
+    /// Fastest timed run.
+    min_ms: f32,
+    /// Slowest timed run.
+    max_ms: f32,
+    /// How many timed runs the figures above cover.
+    runs: u32,
+
+    /// Summarizes `samples`, sorting them in place. Asserts there is at
+    /// least one.
+    pub fn fromSamples(samples: []f32) Timing {
+        std.debug.assert(samples.len > 0);
+        std.mem.sort(f32, samples, {}, std.sort.asc(f32));
+        const mid = samples.len / 2;
+        return .{
+            .median_ms = if (samples.len % 2 == 1)
+                samples[mid]
+            else
+                (samples[mid - 1] + samples[mid]) / 2,
+            .min_ms = samples[0],
+            .max_ms = samples[samples.len - 1],
+            .runs = @intCast(samples.len),
+        };
+    }
+};
+
+/// Benchmarks a piece of GPU work: repeats it untimed until the GPU has left
+/// its idle clock state, then times more repetitions with CUDA events and
+/// reports their median.
+///
+/// A single launch from idle under-reports a compute-bound kernel. On a GTX
+/// 1660 Ti (driver 615.78) a 1024x1024 matmul took 1.35 ms per launch for
+/// the first ~300 ms of sustained load and 1.03 ms from then on, and the
+/// GPU was back in the slow state after 3 s without work. A memory-bound
+/// kernel (vector add) measured the same in both states.
+///
+/// The body of the `while` loop is the work being timed. It may queue
+/// kernels and copies on the default stream; work it puts on other streams
+/// must be synchronized before the body ends, because each repetition is
+/// closed by an event on the default stream. The body must give the same
+/// result every time it runs, since it runs many times.
+///
+/// Example:
+///   var bench = try cuda.Bench.init(io, .{});
+///   defer bench.deinit();
+///   while (try bench.next()) try kernel.launch(cfg, args);
+///   const t = bench.total(); // t.median_ms, t.min_ms, t.max_ms, t.runs
+pub const Bench = struct {
+    /// Supplies the host clock that bounds the warm-up and the timed phase.
+    io: std.Io,
+    /// The options this benchmark was created with.
+    opts: Options,
+    /// `marks[0]` opens a repetition, `lap` records the next ones, and the
+    /// last one recorded closes it.
+    marks: [max_segments + 1]Event,
+    /// Marks recorded so far in the current repetition.
+    n_marks: usize = 0,
+    /// Where the benchmark is in its life cycle.
+    phase: enum { idle, warmup, timed, done } = .idle,
+    /// Host time at which the current phase began.
+    phase_start: std.Io.Clock.Timestamp = undefined,
+    /// Timed repetitions stored so far.
+    count: u32 = 0,
+    /// Segments per repetition, fixed by the first timed one.
+    segments: usize = 0,
+    /// Milliseconds each timed repetition took.
+    totals: [max_runs]f32 = undefined,
+    /// Milliseconds each segment of each timed repetition took.
+    laps: [max_segments][max_runs]f32 = undefined,
+
+    /// Most timed repetitions a `Bench` can store.
+    pub const max_runs = 64;
+    /// Most segments a repetition can be split into with `lap`.
+    pub const max_segments = 4;
+
+    /// How long to warm up and how many repetitions to time.
+    pub const Options = struct {
+        /// Repeat the work untimed until this much host time has passed,
+        /// and always at least once. The default leaves a margin over the
+        /// ~300 ms a GTX 1660 Ti needed to reach its full clocks.
+        warmup_ms: u32 = 400,
+        /// Timed repetitions to collect, from 1 to `max_runs`.
+        runs: u32 = 20,
+        /// Stop collecting early once the timed repetitions have taken this
+        /// much host time; at least one is always collected. This bounds
+        /// the cost of slow work, for example on a simulated GPU.
+        budget_ms: u32 = 2000,
+    };
+
+    /// Creates the events a benchmark needs. `io` supplies the host clock
+    /// that bounds the warm-up and the timed phase.
+    pub fn init(io: std.Io, opts: Options) CudaError!Bench {
+        std.debug.assert(opts.runs >= 1 and opts.runs <= max_runs);
+        var marks: [max_segments + 1]Event = undefined;
+        var created: usize = 0;
+        errdefer for (marks[0..created]) |e| e.deinit();
+        while (created < marks.len) : (created += 1) {
+            marks[created] = try Event.create();
+        }
+        return .{ .io = io, .opts = opts, .marks = marks };
+    }
+
+    /// Destroys the benchmark's events.
+    pub fn deinit(self: *Bench) void {
+        for (self.marks) |e| e.deinit();
+    }
+
+    /// Closes the previous repetition, waiting for its work to finish, and
+    /// opens the next one. Returns false once the timed repetitions are
+    /// complete; use it as the condition of a `while` loop whose body is
+    /// the work.
+    pub fn next(self: *Bench) CudaError!bool {
+        switch (self.phase) {
+            .idle => {
+                self.phase = .warmup;
+                self.phase_start = .now(self.io, .awake);
+            },
+            .warmup => {
+                try self.close();
+                if (self.phaseMs() >= @as(f64, @floatFromInt(self.opts.warmup_ms))) {
+                    self.phase = .timed;
+                    self.phase_start = .now(self.io, .awake);
+                }
+            },
+            .timed => {
+                try self.close();
+                try self.store();
+                if (self.count == self.opts.runs or
+                    self.phaseMs() >= @as(f64, @floatFromInt(self.opts.budget_ms)))
+                {
+                    self.phase = .done;
+                    return false;
+                }
+            },
+            .done => return false,
+        }
+        self.n_marks = 0;
+        try self.mark();
+        return true;
+    }
+
+    /// Ends the current segment of the repetition and starts the next, so
+    /// stages of a pipeline can be timed separately with `segment`. Every
+    /// repetition must call it the same number of times, at most
+    /// `max_segments - 1`.
+    pub fn lap(self: *Bench) CudaError!void {
+        std.debug.assert(self.n_marks >= 1 and self.n_marks < max_segments);
+        try self.mark();
+    }
+
+    /// Timing of whole repetitions. Call after `next` has returned false.
+    pub fn total(self: *Bench) Timing {
+        std.debug.assert(self.phase == .done);
+        return .fromSamples(self.totals[0..self.count]);
+    }
+
+    /// Timing of segment `index` (0 is the work before the first `lap`).
+    /// Call after `next` has returned false.
+    pub fn segment(self: *Bench, index: usize) Timing {
+        std.debug.assert(self.phase == .done and index < self.segments);
+        return .fromSamples(self.laps[index][0..self.count]);
+    }
+
+    fn mark(self: *Bench) CudaError!void {
+        try self.marks[self.n_marks].record(null);
+        self.n_marks += 1;
+    }
+
+    /// Records the closing mark and waits for it, and so for all the work
+    /// queued before it.
+    fn close(self: *Bench) CudaError!void {
+        try self.mark();
+        try self.marks[self.n_marks - 1].synchronize();
+    }
+
+    fn store(self: *Bench) CudaError!void {
+        const segs = self.n_marks - 1;
+        if (self.count == 0) self.segments = segs;
+        std.debug.assert(segs == self.segments);
+        self.totals[self.count] = try Event.elapsed(self.marks[0], self.marks[segs]);
+        for (0..segs) |i| {
+            self.laps[i][self.count] = try Event.elapsed(self.marks[i], self.marks[i + 1]);
+        }
+        self.count += 1;
+    }
+
+    /// Host milliseconds since the current phase began.
+    fn phaseMs(self: *const Bench) f64 {
+        const us = self.phase_start.untilNow(self.io).raw.toMicroseconds();
+        return @as(f64, @floatFromInt(us)) / 1000.0;
     }
 };

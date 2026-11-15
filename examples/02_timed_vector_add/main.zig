@@ -1,6 +1,6 @@
-//! Vector add timed both ways: the kernel alone with CUDA events, and the
-//! same work on the CPU with the host clock. One launch with no warm-up, so
-//! the GPU number includes clock ramp-up from idle.
+//! Vector add timed both ways: the kernel alone with `cuda.Bench` (a warm-up,
+//! then the median of repeated launches timed with CUDA events), and the
+//! same work on the CPU with the host clock.
 
 const std = @import("std");
 const cuda = @import("cuda");
@@ -58,11 +58,6 @@ pub fn main(init: std.process.Init) !void {
     const dout = try Buf.alloc(N);
     defer dout.free();
 
-    const start = try cuda.Event.create();
-    defer start.deinit();
-    const end = try cuda.Event.create();
-    defer end.deinit();
-
     const block: c_uint = 256;
     const grid: c_uint = (N + block - 1) / block;
     const runtime_n = N;
@@ -70,22 +65,20 @@ pub fn main(init: std.process.Init) !void {
     try dx.copyFromHost(host_x);
     try dy.copyFromHost(host_y);
 
-    try start.record(null);
-
-    try kernel.launch(.{
-        .grid = .{ .x = grid },
-        .block = .{ .x = block },
-    }, .{
-        .n = runtime_n,
-        .x = dx.ptr,
-        .y = dy.ptr,
-        .out = dout.ptr,
-    });
-
-    try end.record(null);
-
-    try end.synchronize();
-    const gpu_ms = try cuda.Event.elapsed(start, end);
+    var bench = try cuda.Bench.init(io, .{});
+    defer bench.deinit();
+    while (try bench.next()) {
+        try kernel.launch(.{
+            .grid = .{ .x = grid },
+            .block = .{ .x = block },
+        }, .{
+            .n = runtime_n,
+            .x = dx.ptr,
+            .y = dy.ptr,
+            .out = dout.ptr,
+        });
+    }
+    const timing = bench.total();
 
     try dout.copyToHost(host_out);
 
@@ -96,10 +89,11 @@ pub fn main(init: std.process.Init) !void {
         if (e > max_err) max_err = e;
     }
 
-    const speedup = cpu_ms / gpu_ms;
+    const speedup = cpu_ms / timing.median_ms;
     std.debug.print("\nN = {d}\n", .{N});
     std.debug.print("CPU: {d:.3} ms\n", .{cpu_ms});
-    std.debug.print("GPU: {d:.3} ms ({d:.1}x speedup, kernel only)\n", .{ gpu_ms, speedup });
+    std.debug.print("GPU: {d:.3} ms ({d:.1}x speedup, kernel only)\n", .{ timing.median_ms, speedup });
+    std.debug.print("GPU timing: median of {d} runs after a {d} ms warm-up (min {d:.3}, max {d:.3} ms)\n", .{ timing.runs, bench.opts.warmup_ms, timing.min_ms, timing.max_ms });
     std.debug.print("Max error: {d}\n", .{max_err});
     if (max_err > 1e-5) return error.VerificationFailed;
 }

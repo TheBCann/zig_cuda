@@ -11,6 +11,7 @@ const MATRIX_SIZE: u32 = 1024; // M = K = N = 1024
 
 pub fn main(init: std.process.Init) !void {
     const a = init.gpa;
+    const io = init.io;
 
     try cuda.init();
     const dev = try cuda.Device.get(0);
@@ -63,11 +64,6 @@ pub fn main(init: std.process.Init) !void {
     try dev_a.copyFromHost(host_a);
     try dev_b.copyFromHost(host_b);
 
-    const k_start = try cuda.Event.create();
-    defer k_start.deinit();
-    const k_end = try cuda.Event.create();
-    defer k_end.deinit();
-
     // ── Benchmarking configurations ──────────────────────────────────
     const KernelConfig = struct {
         name: []const u8,
@@ -96,15 +92,16 @@ pub fn main(init: std.process.Init) !void {
 
         const grid_dim: u32 = (N + cfg.tile - 1) / cfg.tile;
 
-        try k_start.record(null);
-        try cfg.func.launch(.{
-            .grid = .{ .x = grid_dim, .y = grid_dim },
-            .block = .{ .x = cfg.tile, .y = cfg.tile },
-        }, .{ .M = M, .N = N, .K = K, .A = dev_a.ptr, .B = dev_b.ptr, .C = dev_c.ptr });
-        try k_end.record(null);
-
-        try k_end.synchronize();
-        const ms = try cuda.Event.elapsed(k_start, k_end);
+        var bench = try cuda.Bench.init(io, .{});
+        defer bench.deinit();
+        while (try bench.next()) {
+            try cfg.func.launch(.{
+                .grid = .{ .x = grid_dim, .y = grid_dim },
+                .block = .{ .x = cfg.tile, .y = cfg.tile },
+            }, .{ .M = M, .N = N, .K = K, .A = dev_a.ptr, .B = dev_b.ptr, .C = dev_c.ptr });
+        }
+        const timing = bench.total();
+        const ms = timing.median_ms;
 
         try dev_c.copyToHost(host_c);
 
@@ -120,7 +117,7 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("[{s}]\n", .{cfg.name});
         std.debug.print("  Grid: {d}x{d}, Block: {d}x{d}\n", .{ grid_dim, grid_dim, cfg.tile, cfg.tile });
         std.debug.print("  Error:  {d}\n", .{max_err});
-        std.debug.print("  Time:   {d:.3} ms\n", .{ms});
+        std.debug.print("  Time:   {d:.3} ms  (median of {d} runs; min {d:.3}, max {d:.3})\n", .{ ms, timing.runs, timing.min_ms, timing.max_ms });
         std.debug.print("  Speed:  {d:.2} GFLOPS\n\n", .{gflops});
         if (max_err > 0.001) return error.VerificationFailed;
     }
@@ -156,14 +153,16 @@ pub fn main(init: std.process.Init) !void {
     const f16_tile: u32 = 16;
     const f16_grid: u32 = (N + f16_tile - 1) / f16_tile;
 
-    try k_start.record(null);
-    try k_f16.launch(.{
-        .grid = .{ .x = f16_grid, .y = f16_grid },
-        .block = .{ .x = f16_tile, .y = f16_tile },
-    }, .{ .M = M, .N = N, .K = K, .A = dev_a_f16.ptr, .B = dev_b_f16.ptr, .C = dev_c_f16.ptr });
-    try k_end.record(null);
-    try k_end.synchronize();
-    const f16_ms = try cuda.Event.elapsed(k_start, k_end);
+    var f16_bench = try cuda.Bench.init(io, .{});
+    defer f16_bench.deinit();
+    while (try f16_bench.next()) {
+        try k_f16.launch(.{
+            .grid = .{ .x = f16_grid, .y = f16_grid },
+            .block = .{ .x = f16_tile, .y = f16_tile },
+        }, .{ .M = M, .N = N, .K = K, .A = dev_a_f16.ptr, .B = dev_b_f16.ptr, .C = dev_c_f16.ptr });
+    }
+    const f16_timing = f16_bench.total();
+    const f16_ms = f16_timing.median_ms;
 
     try dev_c_f16.copyToHost(host_c_f16);
 
@@ -180,7 +179,8 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("[f16 16x16x16 (acc=f32)]\n", .{});
     std.debug.print("  Grid: {d}x{d}, Block: {d}x{d}\n", .{ f16_grid, f16_grid, f16_tile, f16_tile });
     std.debug.print("  Error:  {d}\n", .{f16_max_err});
-    std.debug.print("  Time:   {d:.3} ms\n", .{f16_ms});
+    std.debug.print("  Time:   {d:.3} ms  (median of {d} runs; min {d:.3}, max {d:.3})\n", .{ f16_ms, f16_timing.runs, f16_timing.min_ms, f16_timing.max_ms });
     std.debug.print("  Speed:  {d:.2} GFLOPS\n\n", .{f16_gflops});
+    std.debug.print("GPU timing: each kernel was warmed up for {d} ms before its timed runs\n", .{f16_bench.opts.warmup_ms});
     if (f16_max_err > 0.5) return error.VerificationFailed;
 }

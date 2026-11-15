@@ -59,21 +59,16 @@ pub fn main(init: std.process.Init) !void {
 
     try dev_input.copyFromHost(host_input);
 
-    const start = try cuda.Event.create();
-    defer start.deinit();
-    const end = try cuda.Event.create();
-    defer end.deinit();
-
     const runtime_n = N;
-    try start.record(null);
-    try kernel.launch(.{
-        .grid = .{ .x = num_blocks },
-        .block = .{ .x = BLOCK_SIZE },
-    }, .{ .n = runtime_n, .input = dev_input.ptr, .partials = dev_partials.ptr });
-
-    try end.record(null);
-    try end.synchronize();
-    const kernel_ms = try cuda.Event.elapsed(start, end);
+    var bench = try cuda.Bench.init(io, .{});
+    defer bench.deinit();
+    while (try bench.next()) {
+        try kernel.launch(.{
+            .grid = .{ .x = num_blocks },
+            .block = .{ .x = BLOCK_SIZE },
+        }, .{ .n = runtime_n, .input = dev_input.ptr, .partials = dev_partials.ptr });
+    }
+    const timing = bench.total();
 
     try dev_partials.copyToHost(host_partials);
 
@@ -91,7 +86,8 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("GPU sum: {d:.0}  (error: {d})\n", .{ gpu_sum, gpu_err });
     std.debug.print("\n", .{});
     std.debug.print("CPU time:    {d:.3} ms\n", .{cpu_ms});
-    std.debug.print("GPU kernel:  {d:.3} ms ({d:.1}x vs CPU)\n", .{ kernel_ms, cpu_ms / kernel_ms });
+    std.debug.print("GPU kernel:  {d:.3} ms ({d:.1}x vs CPU)\n", .{ timing.median_ms, cpu_ms / timing.median_ms });
     std.debug.print("Blocks:      {d} (each summing {d} elements)\n", .{ num_blocks, BLOCK_SIZE });
+    std.debug.print("GPU timing:  median of {d} runs after a {d} ms warm-up (min {d:.3}, max {d:.3} ms)\n", .{ timing.runs, bench.opts.warmup_ms, timing.min_ms, timing.max_ms });
     if (gpu_err > 0.5) return error.VerificationFailed;
 }
