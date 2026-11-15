@@ -107,6 +107,9 @@ pub fn main(init: std.process.Init) !void {
 
         var max_err: f32 = 0;
         for (host_c) |c| {
+            if (!std.math.isFinite(c))
+                return error.VerificationFailed;
+
             const e = @abs(c - expected);
             if (e > max_err) max_err = e;
         }
@@ -169,6 +172,9 @@ pub fn main(init: std.process.Init) !void {
     const expected_f16: f16 = @floatCast(expected);
     var f16_max_err: f32 = 0;
     for (host_c_f16) |c| {
+        if (!std.math.isFinite(c))
+            return error.VerificationFailed;
+
         const e: f32 = @abs(@as(f32, c) - @as(f32, expected_f16));
         if (e > f16_max_err) f16_max_err = e;
     }

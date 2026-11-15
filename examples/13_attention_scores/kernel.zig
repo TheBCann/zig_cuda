@@ -55,6 +55,10 @@ inline fn scoresBody(
     const TILE = cfg.tile;
     const MAX_D = 128; // max supported head dim (compile-time shared mem sizing)
 
+    // Callers must reject dimensions outside 1..128 before launching.
+    // Uniform across the block: return before any shared access or barrier.
+    if (d == 0 or d > MAX_D) return;
+
     const bx: u32 = @intCast(@workGroupId(0)); // tile column = key index range
     const by: u32 = @intCast(@workGroupId(1)); // tile row    = query index range
     const tx: u32 = @intCast(@workItemId(0));
@@ -125,6 +129,7 @@ inline fn scoresBody(
 // ─── Named instantiation ───────────────────────────────────────────────
 
 /// Computes `scores = (Q @ K^T) * inv_sqrt_d` with 16x16 tiles.
+/// Requires 1 <= d <= 128; invalid dimensions leave the output untouched.
 export fn scores_f32_16(
     N: u32,
     d: u32,

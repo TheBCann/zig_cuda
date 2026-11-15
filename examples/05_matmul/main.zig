@@ -133,6 +133,9 @@ pub fn main(init: std.process.Init) !void {
     var max_err: f32 = 0;
     var first_bad: ?usize = null;
     for (host_c, 0..) |c, idx| {
+        if (!std.math.isFinite(c))
+            return error.VerificationFailed;
+
         const e = @abs(c - expected);
         if (e > max_err) max_err = e;
         if (e > 0.001 and first_bad == null) first_bad = idx;
