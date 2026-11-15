@@ -11,6 +11,9 @@ const D: u32 = 64; // head dimension
 const TILE: u32 = 16; // must match the named kernel
 
 pub fn main(init: std.process.Init) !void {
+    // The scores kernel stores the full head dimension in shared memory.
+    if (D == 0 or D > 128) return error.InvalidHeadDimension;
+
     const a = init.gpa;
     const io = init.io;
 
@@ -104,6 +107,9 @@ pub fn main(init: std.process.Init) !void {
     var first_bad: ?usize = null;
 
     for (host_scores, cpu_scores, 0..) |gpu, cpu, idx| {
+        if (!std.math.isFinite(gpu))
+            return error.VerificationFailed;
+
         const abs_err = @abs(gpu - cpu);
         if (abs_err > max_abs_err) max_abs_err = abs_err;
 

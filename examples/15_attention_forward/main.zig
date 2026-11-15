@@ -16,6 +16,9 @@ const TILE: u32 = 16; // tile size for the matmul kernels
 const SOFTMAX_BLOCK: u32 = 256;
 
 pub fn main(init: std.process.Init) !void {
+    // The scores kernel stores the full head dimension in shared memory.
+    if (D == 0 or D > 128) return error.InvalidHeadDimension;
+
     const a = init.gpa;
     const io = init.io;
 
@@ -166,6 +169,11 @@ pub fn main(init: std.process.Init) !void {
     var first_bad: ?usize = null;
 
     for (host_output, cpu_output, 0..) |gpu, cpu, idx| {
+        if (!std.math.isFinite(gpu)) {
+            std.debug.print("Nonfinite GPU result at index {d}: {d}\n", .{ idx, gpu });
+            return error.VerificationFailed;
+        }
+
         const abs_err = @abs(gpu - cpu);
         if (abs_err > max_abs_err) max_abs_err = abs_err;
 
@@ -175,6 +183,15 @@ pub fn main(init: std.process.Init) !void {
         }
 
         if (abs_err > 1e-3 and first_bad == null) first_bad = idx;
+        // const abs_err = @abs(gpu - cpu);
+        // if (abs_err > max_abs_err) max_abs_err = abs_err;
+        //
+        // if (@abs(cpu) > 1e-4) {
+        //     const rel = abs_err / @abs(cpu);
+        //     if (rel > max_rel_err) max_rel_err = rel;
+        // }
+        //
+        // if (abs_err > 1e-3 and first_bad == null) first_bad = idx;
     }
 
     // ── Report ───────────────────────────────────────────────────────

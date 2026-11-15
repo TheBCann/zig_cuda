@@ -89,5 +89,5 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("GPU kernel:  {d:.3} ms ({d:.1}x vs CPU)\n", .{ timing.median_ms, cpu_ms / timing.median_ms });
     std.debug.print("Blocks:      {d} (each summing {d} elements)\n", .{ num_blocks, BLOCK_SIZE });
     std.debug.print("GPU timing:  median of {d} runs after a {d} ms warm-up (min {d:.3}, max {d:.3} ms)\n", .{ timing.runs, bench.opts.warmup_ms, timing.min_ms, timing.max_ms });
-    if (gpu_err > 0.5) return error.VerificationFailed;
+    if (!std.math.isFinite(gpu_sum) or gpu_err > 0.5) return error.VerificationFailed;
 }

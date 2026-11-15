@@ -75,6 +75,9 @@ pub fn main(init: std.process.Init) !void {
 
     var max_err: f32 = 0;
     for (host_x, host_y, host_out) |x, y, o| {
+        if (!std.math.isFinite(o))
+            return error.VerificationFailed;
+
         const e = @abs(o - (x + y));
         if (e > max_err) max_err = e;
     }

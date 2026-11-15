@@ -84,8 +84,11 @@ pub fn main(init: std.process.Init) !void {
 
     // ── Verify ───────────────────────────────────────────────────────
     var max_err: f32 = 0;
-    for (cpu_out, host_out) |c, g| {
-        const e = @abs(c - g);
+    for (cpu_out, host_out) |cpu, gpu| {
+        if (!std.math.isFinite(gpu))
+            return error.VerificationFailed;
+
+        const e = @abs(cpu - gpu);
         if (e > max_err) max_err = e;
     }
 

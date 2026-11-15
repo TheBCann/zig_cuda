@@ -99,6 +99,9 @@ pub fn main(init: std.process.Init) !void {
     // Verify correctness on the sync result.
     var sync_max_err: f32 = 0;
     for (host_x, host_y, host_out_sync) |x, y, o| {
+        if (!std.math.isFinite(o))
+            return error.VerificationFailed;
+
         const e = @abs(o - (x + y));
         if (e > sync_max_err) sync_max_err = e;
     }
@@ -185,6 +188,9 @@ pub fn main(init: std.process.Init) !void {
     // Verify the streamed result matches.
     var stream_max_err: f32 = 0;
     for (host_x, host_y, pin_out.slice()) |x, y, o| {
+        if (!std.math.isFinite(o))
+            return error.VerificationFailed;
+
         const e = @abs(o - (x + y));
         if (e > stream_max_err) stream_max_err = e;
     }

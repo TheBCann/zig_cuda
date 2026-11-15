@@ -102,6 +102,9 @@ pub fn main(init: std.process.Init) !void {
     var sum_check_max_err: f32 = 0;
 
     for (host_output, cpu_output, 0..) |gpu, cpu, idx| {
+        if (!std.math.isFinite(gpu))
+            return error.VerificationFailed;
+
         const abs_err = @abs(gpu - cpu);
         if (abs_err > max_abs_err) max_abs_err = abs_err;
 
