@@ -1,0 +1,89 @@
+# Optional, non-required check. The hosted runners have no GPU, so ci.yml only
+# builds the examples. This workflow also runs them on a simulated NVIDIA H100
+# (https://github.com/pantheongpu/pantheonsim): the 15 examples verify their
+# own results and exit non-zero on a mismatch. A simulator cannot reproduce
+# hardware-specific behavior or timing, so it complements running
+# `zig build run-all` on real hardware and does not replace it.
+name: gpu-sim
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - "build.zig"
+      - "build.zig.zon"
+      - "src/**"
+      - "examples/**"
+      - ".github/workflows/gpu-sim.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  examples:
+    name: Examples on simulated H100
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      # Same Zig as ci.yml: the nightly (master).
+      - name: Install Zig nightly (master)
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: master
+
+      # No CUDA toolkit is needed: Zig builds the kernels and the host code, and
+      # the simulator supplies libcuda.
+      - name: Set up the simulated GPU
+        uses: pantheongpu/setup-pantheonsim@ca87fe3143b29166822b923d6050945c5179408c # v0.1.5
+        with:
+          gpu: nvidia/h100
+          cuda-toolkit: none
+
+      # Linking needs a libcuda.so, so generate the same stub as ci.yml. It is
+      # only on the link path: the executables record libcuda.so.1 as needed,
+      # and `vgpu run` puts the simulator's libcuda in front of the loader
+      # path, so the stub is never loaded at run time.
+      - name: Generate stub libcuda.so from bindings.zig
+        run: |
+          mkdir -p .ci-cuda/lib/stubs
+          grep -oP '\bextern\s+(?:"cuda"\s+)?fn\s+\K\w+' src/bindings.zig \
+            | sed 's/.*/void &(void) {}/' > .ci-cuda/stub.c
+          n=$(wc -l < .ci-cuda/stub.c); echo "stubbed $n driver symbols"
+          test "$n" -gt 0
+          zig cc -shared -fPIC -Wl,-soname,libcuda.so.1 \
+            -o .ci-cuda/lib/stubs/libcuda.so .ci-cuda/stub.c
+
+      # The kernels are PTX for sm_75, which the simulator runs on the H100.
+      - name: Build the examples
+        run: zig build -Dcuda-path="$PWD/.ci-cuda"
+
+      # Run each executable under the simulator (instead of `zig build
+      # run-all`, so that only the examples, not the Zig build, run under it).
+      # Each one exits non-zero if its GPU result fails verification.
+      - name: Run every example
+        run: |
+          shopt -s nullglob
+          bins=(zig-out/bin/*)
+          echo "found ${#bins[@]} executables"
+          test "${#bins[@]}" -eq 15
+          failed=0
+          for b in "${bins[@]}"; do
+            echo "::group::$(basename "$b")"
+            vgpu run "$b" || { echo "::error::$(basename "$b") failed"; failed=1; }
+            echo "::endgroup::"
+          done
+          exit $failed
