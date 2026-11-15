@@ -39,6 +39,11 @@ pub fn main(init: std.process.Init) !void {
     const k_32x32 = try module.getFunction(MatmulArgs, "matmul_f32_32x32");
     const k_f16 = try module.getFunction(MatmulArgs, "matmul_f16_16x16");
 
+    try @import("matmul_check").run(f32, k_8x8, 8, 8, .{ .x = 8, .y = 8 });
+    try @import("matmul_check").run(f32, k_16x16, 16, 16, .{ .x = 16, .y = 16 });
+    try @import("matmul_check").run(f32, k_32x32, 32, 32, .{ .x = 32, .y = 32 });
+    try @import("matmul_check").run(f16, k_f16, 16, 16, .{ .x = 16, .y = 16 });
+
     const elements = MATRIX_SIZE * MATRIX_SIZE;
 
     // ── Host buffers ─────────────────────────────────────────────────

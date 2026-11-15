@@ -48,6 +48,8 @@ pub fn main(init: std.process.Init) !void {
     defer module.unload();
     const kernel = try module.getFunction(MatmulArgs, "matmul_vec");
 
+    try @import("matmul_check").run(f32, kernel, TILE, TILE, .{ .x = TILE, .y = TILE });
+
     const elements: u32 = N * N;
 
     // Host buffers.

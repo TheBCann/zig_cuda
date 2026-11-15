@@ -1,7 +1,7 @@
 # Compile-only CI: catches nightly-Zig API drift (the common breakage) on a
 # GPU-less runner. Linking normally needs the CUDA toolkit's stub libcuda.so,
 # so we generate a stub from the exact symbol list in src/bindings.zig — if a
-# binding is added, the stub picks it up automatically.
+# CUDA declaration is added, the stub picks it up automatically.
 #
 # What this does NOT cover: actually running kernels. `zig build run-all` on
 # real hardware remains the correctness suite.
@@ -36,9 +36,9 @@ jobs:
       - name: Generate stub libcuda.so from bindings.zig
         run: |
           mkdir -p .ci-cuda/lib/stubs
-          # Matches both `extern "cuda" fn` and library-less `extern fn`.
-          grep -oP '\bextern\s+(?:"cuda"\s+)?fn\s+\K\w+' src/bindings.zig \
-            | sed 's/.*/void &(void) {}/' > .ci-cuda/stub.c
+          # Only CUDA symbols: TranslateC also emits libc declarations.
+          grep -oP '\bextern\s+(?:"cuda"\s+)?fn\s+\Kcu[A-Z]\w*' src/bindings.zig \
+            | sort -u | sed 's/.*/void &(void) {}/' > .ci-cuda/stub.c
           n=$(wc -l < .ci-cuda/stub.c); echo "stubbed $n driver symbols"
           test "$n" -gt 0
           zig cc -shared -fPIC -Wl,-soname,libcuda.so.1 \
@@ -52,6 +52,11 @@ jobs:
       # Kernels are always built .fast, so they come from the cache here.
       - name: Build in release mode (LLVM + LLD host path)
         run: zig build -Dcuda-path="$PWD/.ci-cuda" -Doptimize=safe
+
+      - name: CPU-only validation tests (debug and fast)
+        run: |
+          zig build test --summary all
+          zig build test -Doptimize=fast --summary all
 
       # Check the PTX embedded in the executables this run installed. zig-out
       # is never cached, so unlike .zig-cache (which a restored setup-zig
@@ -76,7 +81,8 @@ jobs:
       - name: Verify host getFunction names exist as PTX entries
         run: |
           bad=0; checked=0
-          for d in examples/*/; do
+          # Shared helpers under examples/common are not executables.
+          for d in examples/[0-9][0-9]_*/; do
             n=$(basename "$d")
             f="zig-out/bin/$n"
             # Drop // comments, then join lines so a call split across lines

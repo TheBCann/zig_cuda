@@ -59,13 +59,13 @@ export fn matmul_vec(
         // Thread (ty, tx) loads A[row][k_base + 2*tx] and A[row][k_base + 2*tx + 1]
         const a_col0 = k_base + 2 * tx;
         const a_col1 = a_col0 + 1;
-        if (row < M and a_col1 < K) {
+        if (row < M and a_col1 < K and (row * K + a_col0) % 2 == 0) {
             const a_ptr: [*]addrspace(.global) const f32 = A + (row * K + a_col0);
             const a0, const a1 = loadV2(a_ptr);
             shared.tileA[ty][2 * tx] = a0;
             shared.tileA[ty][2 * tx + 1] = a1;
         } else {
-            // Edge case: fall back to scalar loads with bounds checks
+            // Odd row strides can misalign pairs; use scalar loads for those and edges.
             shared.tileA[ty][2 * tx] = if (row < M and a_col0 < K) A[row * K + a_col0] else 0;
             shared.tileA[ty][2 * tx + 1] = if (row < M and a_col1 < K) A[row * K + a_col1] else 0;
         }
