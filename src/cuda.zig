@@ -17,6 +17,7 @@
 
 const std = @import("std");
 const c = @import("bindings.zig");
+const memory_checks = @import("memory_checks.zig");
 
 /// Errors returned by the wrappers, mapped from the driver's `CUresult`.
 /// Codes without a dedicated tag map to `error.Unknown`; use `logError` on
@@ -48,40 +49,39 @@ pub const CudaError = error{
 
 fn toErr(r: c.CUresult) CudaError!void {
     return switch (r) {
-        .success => {},
-        .invalid_value => error.InvalidValue,
-        .out_of_memory => error.OutOfMemory,
-        .not_initialized => error.NotInitialized,
-        .deinitialized => error.Deinitialized,
-        .no_device => error.NoDevice,
-        .invalid_device => error.InvalidDevice,
-        .invalid_context => error.InvalidContext,
-        .invalid_image => error.InvalidImage,
-        .invalid_ptx => error.InvalidPtx,
-        .invalid_source => error.InvalidSource,
-        .file_not_found => error.FileNotFound,
-        .no_binary_for_gpu => error.NoBinaryForGpu,
-        .invalid_handle => error.InvalidHandle,
-        .not_found => error.NotFound,
-        .not_ready => error.NotReady,
-        .illegal_address => error.IllegalAddress,
-        .launch_out_of_resources => error.LaunchOutOfResources,
-        .launch_timeout => error.LaunchTimeout,
-        .unsupported_ptx_version => error.UnsupportedPtxVersion,
+        c.CUDA_SUCCESS => {},
+        c.CUDA_ERROR_INVALID_VALUE => error.InvalidValue,
+        c.CUDA_ERROR_OUT_OF_MEMORY => error.OutOfMemory,
+        c.CUDA_ERROR_NOT_INITIALIZED => error.NotInitialized,
+        c.CUDA_ERROR_DEINITIALIZED => error.Deinitialized,
+        c.CUDA_ERROR_NO_DEVICE => error.NoDevice,
+        c.CUDA_ERROR_INVALID_DEVICE => error.InvalidDevice,
+        c.CUDA_ERROR_INVALID_CONTEXT => error.InvalidContext,
+        c.CUDA_ERROR_INVALID_IMAGE => error.InvalidImage,
+        c.CUDA_ERROR_INVALID_PTX => error.InvalidPtx,
+        c.CUDA_ERROR_INVALID_SOURCE => error.InvalidSource,
+        c.CUDA_ERROR_FILE_NOT_FOUND => error.FileNotFound,
+        c.CUDA_ERROR_NO_BINARY_FOR_GPU => error.NoBinaryForGpu,
+        c.CUDA_ERROR_INVALID_HANDLE => error.InvalidHandle,
+        c.CUDA_ERROR_NOT_FOUND => error.NotFound,
+        c.CUDA_ERROR_NOT_READY => error.NotReady,
+        c.CUDA_ERROR_ILLEGAL_ADDRESS => error.IllegalAddress,
+        c.CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES => error.LaunchOutOfResources,
+        c.CUDA_ERROR_LAUNCH_TIMEOUT => error.LaunchTimeout,
+        c.CUDA_ERROR_UNSUPPORTED_PTX_VERSION => error.UnsupportedPtxVersion,
         else => error.Unknown,
     };
 }
 
 /// Print `r`'s numeric code, name and description to stderr.
 pub fn logError(r: c.CUresult) void {
-    var name: [*:0]const u8 = "?";
-    var desc: [*:0]const u8 = "?";
-    // For a code it doesn't recognize, the driver returns
-    // CUDA_ERROR_INVALID_VALUE and writes NULL; only trust the out-params
-    // when the call succeeded.
-    if (c.cuGetErrorName(r, &name) != .success) name = "?";
-    if (c.cuGetErrorString(r, &desc) != .success) desc = "unrecognized error code";
-    std.debug.print("CUDA error {d}: {s}: {s}\n", .{ @backingInt(r), name, desc });
+    var name: [*c]const u8 = null;
+    var desc: [*c]const u8 = null;
+    const name_ok = c.cuGetErrorName(r, &name) == c.CUDA_SUCCESS;
+    const desc_ok = c.cuGetErrorString(r, &desc) == c.CUDA_SUCCESS;
+    const name_text = if (name_ok and name != null) std.mem.span(name) else "?";
+    const desc_text = if (desc_ok and desc != null) std.mem.span(desc) else "unrecognized error code";
+    std.debug.print("CUDA error {d}: {s}: {s}\n", .{ r, name_text, desc_text });
 }
 
 /// Initializes the CUDA driver. Call once before any other function.
@@ -206,8 +206,7 @@ pub fn DeviceBuffer(comptime T: type) type {
         /// Allocates device memory for `n` elements. Returns
         /// `error.SizeOverflow` if `n * @sizeOf(T)` overflows `usize`.
         pub fn alloc(n: usize) CudaError!Self {
-            const bytes = std.math.mul(usize, n, @sizeOf(T)) catch
-                return error.SizeOverflow;
+            const bytes = try memory_checks.allocationBytes(T, n);
 
             var p: c.CUdeviceptr = 0;
             try toErr(c.cuMemAlloc_v2(&p, bytes));
@@ -219,23 +218,24 @@ pub fn DeviceBuffer(comptime T: type) type {
             _ = c.cuMemFree_v2(self.ptr);
         }
 
+        /// Copy methods return InvalidValue if the host slice exceeds the buffer.
         /// Copies `host` to the start of the buffer; blocks until done.
         pub fn copyFromHost(self: Self, host: []const T) CudaError!void {
-            std.debug.assert(host.len <= self.len);
+            const bytes = try memory_checks.copyBytes(T, self.len, host.len);
             try toErr(c.cuMemcpyHtoD_v2(
                 self.ptr,
                 host.ptr,
-                host.len * @sizeOf(T),
+                bytes,
             ));
         }
 
         /// Copies the first `host.len` elements into `host`; blocks until done.
         pub fn copyToHost(self: Self, host: []T) CudaError!void {
-            std.debug.assert(host.len <= self.len);
+            const bytes = try memory_checks.copyBytes(T, self.len, host.len);
             try toErr(c.cuMemcpyDtoH_v2(
                 host.ptr,
                 self.ptr,
-                host.len * @sizeOf(T),
+                bytes,
             ));
         }
 
@@ -243,11 +243,11 @@ pub fn DeviceBuffer(comptime T: type) type {
         /// once. `host` must stay valid until the stream reaches the copy;
         /// use a `PinnedBuffer` for truly asynchronous transfers.
         pub fn copyFromHostAsync(self: Self, host: []const T, stream: Stream) CudaError!void {
-            std.debug.assert(host.len <= self.len);
+            const bytes = try memory_checks.copyBytes(T, self.len, host.len);
             try toErr(c.cuMemcpyHtoDAsync_v2(
                 self.ptr,
                 host.ptr,
-                host.len * @sizeOf(T),
+                bytes,
                 stream.handle,
             ));
         }
@@ -255,11 +255,11 @@ pub fn DeviceBuffer(comptime T: type) type {
         /// Queues a copy into `host` on `stream` and returns at once. Read
         /// `host` only after synchronizing the stream.
         pub fn copyToHostAsync(self: Self, host: []T, stream: Stream) CudaError!void {
-            std.debug.assert(host.len <= self.len);
+            const bytes = try memory_checks.copyBytes(T, self.len, host.len);
             try toErr(c.cuMemcpyDtoHAsync_v2(
                 host.ptr,
                 self.ptr,
-                host.len * @sizeOf(T),
+                bytes,
                 stream.handle,
             ));
         }
@@ -303,8 +303,7 @@ pub fn PinnedBuffer(comptime T: type) type {
         /// Allocates pinned host memory for `n` elements. Returns
         /// `error.SizeOverflow` if `n * @sizeOf(T)` overflows `usize`.
         pub fn alloc(n: usize) CudaError!Self {
-            const bytes = std.math.mul(usize, n, @sizeOf(T)) catch
-                return error.SizeOverflow;
+            const bytes = try memory_checks.allocationBytes(T, n);
 
             var raw: ?*anyopaque = null;
             try toErr(c.cuMemHostAlloc(&raw, bytes, 0));
@@ -633,3 +632,12 @@ pub const Bench = struct {
         return @as(f64, @floatFromInt(us)) / 1000.0;
     }
 };
+
+test "generated CUDA result constants map to wrapper errors" {
+    try toErr(c.CUDA_SUCCESS);
+    try std.testing.expectError(error.InvalidValue, toErr(c.CUDA_ERROR_INVALID_VALUE));
+    try std.testing.expectError(error.OutOfMemory, toErr(c.CUDA_ERROR_OUT_OF_MEMORY));
+    try std.testing.expectError(error.InvalidPtx, toErr(c.CUDA_ERROR_INVALID_PTX));
+    try std.testing.expectError(error.NotReady, toErr(c.CUDA_ERROR_NOT_READY));
+    try std.testing.expectError(error.Unknown, toErr(123456));
+}

@@ -158,17 +158,35 @@ pub fn build(b: *std.Build) void {
         "Directory whose lib/stubs/ holds libcuda.so, e.g. /usr/local/cuda/targets/x86_64-linux (default: pkg-config 'cuda', else /opt/cuda)",
     );
 
+    // Regeneration is explicit: normal builds consume checked-in bindings
+    // and therefore do not require toolkit headers or TranslateC at build time.
+    const cuda_headers = b.option([]const u8, "cuda-headers", "CUDA toolkit root used only by the bindings step") orelse "/opt/cuda";
+    const translated = b.addTranslateC(.{
+        .root_source_file = b.path("include/cuda_bindings.h"),
+        .target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu }),
+        .optimize = .debug,
+    });
+    translated.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ cuda_headers, "include" }) });
+    const update_bindings = b.addUpdateSourceFiles();
+    update_bindings.addCopyFileToSource(translated.getOutput(), "src/bindings.zig");
+    b.step("bindings", "Regenerate checked-in Driver API bindings (needs CUDA headers)").dependOn(&update_bindings.step);
+
     // Expose the runtime cuda module so external consumers can pick it up
     // via `cuda_dep.module("cuda")` from their build.zig, and so our own
     // examples can import it.
     const cuda_module = b.addModule("cuda", .{
         .root_source_file = b.path("src/root.zig"),
-        // The bindings are `extern "cuda" fn`, and Zig only lets a PIC module
-        // depend on a dynamic library by name. Executables stopped defaulting
-        // to PIC in 0.18.0-dev (Zig PR #36532), and `-lcuda` alone does not
-        // satisfy the check, so request PIC for this module explicitly.
-        .pic = true,
     });
+
+    const test_step = b.step("test", "Run CPU-only validation tests (no GPU needed)");
+    for ([_][]const u8{ "src/memory_checks.zig", "src/attention_config.zig", "examples/common/verification.zig", "src/cuda.zig" }) |source| {
+        const tests = b.addTest(.{ .root_module = b.createModule(.{
+            .root_source_file = b.path(source),
+            .target = host_target,
+            .optimize = optimize,
+        }) });
+        test_step.dependOn(&b.addRunArtifact(tests).step);
+    }
 
     // Every example follows the same shape: kernel.zig (compiled to PTX),
     // main.zig (host code), embed the PTX, link libcuda. The buildExample
@@ -227,6 +245,14 @@ fn buildExample(b: *std.Build, opts: ExampleBuildOpts) void {
         .sm = .sm_75,
     });
 
+    if (std.mem.eql(u8, opts.name, "13_attention_scores") or
+        std.mem.eql(u8, opts.name, "15_attention_forward"))
+    {
+        kernel.root_module.addAnonymousImport("attention_config", .{
+            .root_source_file = b.path("src/attention_config.zig"),
+        });
+    }
+
     // ── Host executable ─────────────────────────────────────────────
     const exe = b.addExecutable(.{
         .name = opts.name,
@@ -236,6 +262,15 @@ fn buildExample(b: *std.Build, opts: ExampleBuildOpts) void {
             .optimize = opts.optimize,
         }),
     });
+
+    exe.root_module.addAnonymousImport("attention_config", .{
+        .root_source_file = b.path("src/attention_config.zig"),
+    });
+    const matmul_check = b.createModule(.{
+        .root_source_file = b.path("examples/common/matmul_check.zig"),
+    });
+    matmul_check.addImport("cuda", opts.cuda_module);
+    exe.root_module.addImport("matmul_check", matmul_check);
 
     // Wire up the runtime cuda module + the embedded PTX.
     exe.root_module.addImport("cuda", opts.cuda_module);

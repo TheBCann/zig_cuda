@@ -53,9 +53,9 @@ inline fn scoresBody(
     const T = cfg.T;
     const AccumT = cfg.accum;
     const TILE = cfg.tile;
-    const MAX_D = 128; // max supported head dim (compile-time shared mem sizing)
+    const MAX_D = @import("attention_config").max_head_dim;
 
-    // Callers must reject dimensions outside 1..128 before launching.
+    // Callers must reject dimensions outside 1..MAX_D before launching.
     // Uniform across the block: return before any shared access or barrier.
     if (d == 0 or d > MAX_D) return;
 
@@ -129,7 +129,7 @@ inline fn scoresBody(
 // ─── Named instantiation ───────────────────────────────────────────────
 
 /// Computes `scores = (Q @ K^T) * inv_sqrt_d` with 16x16 tiles.
-/// Requires 1 <= d <= 128; invalid dimensions leave the output untouched.
+/// Requires 1 <= d <= attention_config.max_head_dim; invalid dimensions leave the output untouched.
 export fn scores_f32_16(
     N: u32,
     d: u32,

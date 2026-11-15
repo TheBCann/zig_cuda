@@ -219,7 +219,7 @@ pub fn main(init: std.process.Init) !void {
 
 // Small helper to call raw bindings without importing the whole error mapping.
 fn toErr(r: cuda.bindings.CUresult) cuda.CudaError!void {
-    if (r == .success) return;
+    if (r == cuda.bindings.CUDA_SUCCESS) return;
     cuda.logError(r);
     return error.Unknown;
 }

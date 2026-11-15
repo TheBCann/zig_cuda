@@ -1,10 +1,10 @@
 # zig_cuda
 
-Pure-Zig bindings for the NVIDIA CUDA Driver API, plus working examples
+An idiomatic Zig API over generated NVIDIA CUDA Driver API bindings, plus examples
 that compile Zig kernels to PTX and launch them on the GPU.
 
-No CUDA SDK headers needed — the bindings are
-hand-written `extern "cuda"` declarations. At link time the build
+Normal builds need no CUDA SDK headers: the TranslateC-generated bindings
+are checked in. Regenerating them requires toolkit headers. At link time the build
 resolves `libcuda.so` through pkg-config's `cuda` package when your
 system has one, otherwise against the CUDA toolkit's `lib/stubs`
 directory (default `/opt/cuda`); `-Dcuda-path` overrides both. At
@@ -18,12 +18,13 @@ self-contained executable.
 
 Working on:
 
-- Zig 0.17.0 or newer. Tested on the 0.17.0 release and on nightlies
-  0.18.0-dev.974+598176dbb and 0.18.0-dev.1124+2ecf4b5e2. Nightlies
-  0.18.0-dev.287 through 0.18.0-dev.295 have a Zig bug (fixed in
-  dev.296 by Zig commit `156ab92d9d`, 2026-10-15) that breaks using this
-  package as a dependency; the examples themselves still build and run
-  there.
+- The generated-bindings migration is validated with Zig
+  0.18.0-dev.974+598176dbb: debug/safe builds, CPU tests in debug/fast
+  modes, a dependency consumer build, and all 15 GPU examples.
+  Before this migration, the handwritten-bindings version was tested with
+  Zig 0.17.0 and nightlies including 0.18.0-dev.1124+2ecf4b5e2.
+  Those results do not establish compatibility with the generated bindings;
+  Zig 0.17.0 and other nightlies still need revalidation for this branch.
 - Arch Linux, kernel 7.2, NVIDIA driver 615.78.08 via `nvidia-open-dkms`,
   CUDA 13.4
 - GTX 1660 Ti (Turing, sm_75)
@@ -98,13 +99,6 @@ imports zig_cuda's build.zig as a namespace (giving you `addKernel`, `linkCuda`,
 (`src/root.zig`) for your main.zig to `@import("cuda")` at runtime. Two
 different things named "cuda" depending on context.
 
-**The `cuda` module is compiled as PIC.** Its bindings are
-`extern "cuda"` declarations, and Zig only lets position-independent
-code depend on a dynamic library by name. `cuda_dep.module("cuda")`
-already has `.pic = true`; if you build your own module from
-zig_cuda's `src/root.zig`, set `.pic = true` on it too (see
-[Workarounds](#workarounds)).
-
 **CUDA path.** libcuda is found through pkg-config's `cuda` package if
 your system has one, else under `/opt/cuda` (Arch Linux). Otherwise
 pass the directory whose `lib/stubs/` holds `libcuda.so`, e.g.
@@ -151,13 +145,32 @@ Device: NVIDIA GeForce GTX 1660 Ti
 N=1048576  max error = 0
 ```
 
+## Validation and benchmark interpretation
+
+`zig build test` runs CPU-only regression tests for allocation overflow, copy
+bounds, nonfinite verification results, and attention head-dimension limits.
+Use `zig build test -Doptimize=fast` to check that validation remains active
+without runtime safety checks.
+
+`zig build run-all -Doptimize=safe` runs GPU verification and benchmarks with
+optimized host code. Matmul examples first check deterministic random inputs
+against an f64 CPU reference on four shapes, including rectangular matrices
+with partial tiles and odd row strides. The original large all-ones benchmarks
+remain separate from those checks.
+
+Report GPU model, driver version, Zig version, optimization mode, matrix sizes,
+and whether transfers are included alongside benchmark figures. GPU medians
+follow a 400 ms warm-up by default. CPU references use naive loops; speedups
+against these references are not comparisons against optimized BLAS libraries.
+The historical performance figures below describe their original runs.
+
 ## Project layout
 
 ```
 build.zig                          # cross-compiles host + PTX, embeds PTX into host
 src/
   root.zig                         # public API (re-exports from cuda.zig + bindings.zig)
-  bindings.zig                     # raw `extern "cuda"` declarations
+  bindings.zig                     # checked-in TranslateC output (do not edit)
   cuda.zig                         # idiomatic Zig wrappers (Device, Context, Module, ...)
 examples/
   01_vector_add/                   # minimal launch + correctness check
@@ -182,33 +195,15 @@ examples/
 This project originally shipped five workarounds for issues at the
 intersection of Zig nightly, LLVM's NVPTX backend, and the host
 toolchain. None is needed on Zig 0.17.0 or newer (#2 never had any
-effect), and all five have been removed; Zig 0.18.0-dev added one new
-requirement. The history is kept below because code written against
+effect), and all five have been removed. A later PIC workaround was also retired
+with generated bindings. The history is kept below because code written against
 older Zig still carries these patterns.
 
-### Required: the `cuda` module is compiled as PIC
+### Retired: named extern PIC requirement
 
-Since Zig PR #36532 (0.18.0-dev.131) executables no longer default to
-position-independent code, and Zig only lets PIC code depend on a
-dynamic library by name. Every `extern "cuda" fn` then fails with:
-
-```
-error: dependency on dynamic library 'cuda' requires enabling Position Independent Code; fixed by '-lcuda' or '-fPIC'
-```
-
-The `-lcuda` half of that hint is wrong for executables: linking
-libcuda does not satisfy the check. So `build.zig` creates the module
-with `.pic = true`:
-
-```zig
-const cuda_module = b.addModule("cuda", .{
-    .root_source_file = b.path("src/root.zig"),
-    .pic = true,
-});
-```
-
-Consumers using `cuda_dep.module("cuda")` inherit this; if you build
-your own module from zig_cuda's sources, set `.pic = true` yourself.
+Earlier handwritten bindings used `extern "cuda" fn`, which required PIC
+in recent Zig versions. Generated declarations use `extern fn`; `linkCuda`
+supplies the library, so the module no longer needs an explicit `.pic = true`.
 
 ### Retired
 
@@ -261,24 +256,45 @@ ever built, including stale ones).
 
 ## Architecture notes
 
-**Hand-rolled bindings.** The bindings in
-`src/bindings.zig` are written directly as `pub extern "cuda" fn ...`
-declarations. `@cImport` has since been removed from the language
-(Zig 0.17.0; C headers now go through the build system's translate-c
-step), and hand-written externs need neither translate-c nor the CUDA
-SDK headers. Only `libcuda.so` is needed at link time — `linkCuda`
-finds it via `linkSystemLibrary("cuda", ...)`, through pkg-config's
-`cuda` package when present and the toolkit's `lib/stubs` directory
-otherwise (`-Dcuda-path` overrides both). At runtime the dynamic linker
-picks up the driver's real `libcuda.so.1`. Because the declarations
-name a dynamic library, the module must be compiled as PIC (see
-[Workarounds](#workarounds)).
+**Generated bindings, typed wrappers.** `src/bindings.zig` is generated from
+CUDA 13.4 (`CUDA_VERSION = 13040`) using Zig
+0.18.0-dev.974+598176dbb for x86_64-linux-gnu. `src/cuda.zig` adds typed
+buffers, checked copy sizes, error unions, kernel argument packing, and timing.
+Consumers can use either interface. Normal builds and CI consume the checked-in
+file and do not regenerate it or require toolkit headers.
 
-**`_v2` ABI symbols.** Driver API functions that handle 64-bit device
-pointers expose `_v2` symbols at the ABI level. The C header `#define`s
-hide this, but at the symbol level the `_v2` versions are what actually
-exist. The bindings call them directly: `cuCtxCreate_v2`,
-`cuMemAlloc_v2`, `cuMemcpyHtoD_v2`, etc.
+To regenerate after changing or upgrading headers:
+
+```sh
+zig build bindings                         # headers under /opt/cuda/include
+zig build bindings -Dcuda-headers=/usr/local/cuda
+zig build test --summary all
+zig build -Doptimize=safe
+```
+
+`-Dcuda-headers` selects headers for regeneration; `-Dcuda-path` still selects
+link-time library search paths. Regeneration is an explicit source update;
+review its diff, especially aliases and API signatures, before committing it.
+The generated snapshot targets Linux x86_64; other host ABIs have not been
+validated in this migration. The migration has been built with the nightly
+listed above; older Zig versions need revalidation with the generated output.
+Some unsupported C macros translate to lazy `@compileError` declarations;
+these do not prevent using successfully translated Driver API functions.
+
+**Raw binding migration.** The public wrapper API is retained, but raw
+`cuda.bindings` now follows TranslateC's C types and NVIDIA names. `CUresult`
+is a C integer, so compare it with `cuda.bindings.CUDA_SUCCESS` instead of
+`.success`, and use `CUDA_ERROR_*` constants instead of enum tags. Returned
+C pointers may be null and require checking before use.
+
+**ABI version selection.** The wrappers continue calling explicit `_v2`
+functions where they did before. Current CUDA headers select `cuCtxCreate_v4`
+for raw `cuCtxCreate`; `include/cuda_bindings.h` adds the single legacy
+`cuCtxCreate_v2` declaration required by `Context.create`. This preserves its
+existing three-argument ABI and older-driver compatibility without enabling
+CUDA's internal versioning macros. The rest of the declarations come directly
+from the toolkit header. Generated declarations for newer APIs do not mean
+an older installed driver can execute those APIs.
 
 **Type-safe kernel launches.** `Module.getFunction(Args, name)` takes
 a user-defined `Args` struct that names each kernel parameter, and
@@ -604,9 +620,9 @@ See `examples/12_softmax/`, `examples/13_attention_scores/`,
 
 ## What's next
 
-The bindings cover 35 functions now, including async transfers,
-pinned memory, streams, and events — enough for production-grade
-kernel scheduling on a single GPU. Kernel launches are type-checked at
+The generated bindings expose the toolkit header's Driver API declarations.
+The typed wrappers cover allocation, transfers, modules, streams, events,
+and kernel launches on a single GPU. Kernel launches are type-checked at
 compile time via `Function(Args)` and user-defined argument structs.
 Matmul sits at ~2.1 TFLOPS f32, within 1.6× of cuBLAS on the same
 hardware. A vanilla attention forward pass runs its three kernels in

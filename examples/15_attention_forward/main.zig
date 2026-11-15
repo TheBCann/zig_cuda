@@ -17,7 +17,7 @@ const SOFTMAX_BLOCK: u32 = 256;
 
 pub fn main(init: std.process.Init) !void {
     // The scores kernel stores the full head dimension in shared memory.
-    if (D == 0 or D > 128) return error.InvalidHeadDimension;
+    try @import("attention_config").validateHeadDimension(D);
 
     const a = init.gpa;
     const io = init.io;
