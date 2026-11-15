@@ -76,28 +76,25 @@ pub fn main(init: std.process.Init) !void {
     try dev_q.copyFromHost(host_q);
     try dev_k.copyFromHost(host_k);
 
-    const k_start = try cuda.Event.create();
-    defer k_start.deinit();
-    const k_end = try cuda.Event.create();
-    defer k_end.deinit();
-
     const grid_dim: c_uint = N / TILE;
 
-    try k_start.record(null);
-    try kernel.launch(.{
-        .grid = .{ .x = grid_dim, .y = grid_dim },
-        .block = .{ .x = TILE, .y = TILE },
-    }, .{
-        .n = N,
-        .d = D,
-        .inv_sqrt_d = inv_sqrt_d,
-        .q = dev_q.ptr,
-        .k = dev_k.ptr,
-        .scores = dev_scores.ptr,
-    });
-    try k_end.record(null);
-    try k_end.synchronize();
-    const kernel_ms = try cuda.Event.elapsed(k_start, k_end);
+    var bench = try cuda.Bench.init(io, .{});
+    defer bench.deinit();
+    while (try bench.next()) {
+        try kernel.launch(.{
+            .grid = .{ .x = grid_dim, .y = grid_dim },
+            .block = .{ .x = TILE, .y = TILE },
+        }, .{
+            .n = N,
+            .d = D,
+            .inv_sqrt_d = inv_sqrt_d,
+            .q = dev_q.ptr,
+            .k = dev_k.ptr,
+            .scores = dev_scores.ptr,
+        });
+    }
+    const timing = bench.total();
+    const kernel_ms = timing.median_ms;
 
     try dev_scores.copyToHost(host_scores);
 
@@ -161,6 +158,9 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("CPU scores:  {d:.3} ms\n", .{cpu_ms});
     std.debug.print("GPU scores:  {d:.3} ms  ({d:.1}x vs CPU, {d:.1} GFLOPS)\n", .{
         kernel_ms, cpu_ms / kernel_ms, gpu_gflops,
+    });
+    std.debug.print("GPU timing: median of {d} runs after a {d} ms warm-up (min {d:.3}, max {d:.3} ms)\n", .{
+        timing.runs, bench.opts.warmup_ms, timing.min_ms, timing.max_ms,
     });
 }
 

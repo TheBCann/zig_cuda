@@ -82,22 +82,15 @@ pub fn main(init: std.process.Init) !void {
     try dx.copyFromHost(host_x);
     try dy.copyFromHost(host_y);
 
-    const k_start = try cuda.Event.create();
-    defer k_start.deinit();
-    const k_end = try cuda.Event.create();
-    defer k_end.deinit();
-
-    try k_start.record(null);
-
-    try kernel.launch(.{
-        .grid = .{ .x = grid },
-        .block = .{ .x = block },
-    }, .{ .n = runtime_n, .x = dx.ptr, .y = dy.ptr, .out = dout.ptr });
-
-    try k_end.record(null);
-
-    try k_end.synchronize();
-    const kernel_only_ms = try cuda.Event.elapsed(k_start, k_end);
+    var k_bench = try cuda.Bench.init(io, .{});
+    defer k_bench.deinit();
+    while (try k_bench.next()) {
+        try kernel.launch(.{
+            .grid = .{ .x = grid },
+            .block = .{ .x = block },
+        }, .{ .n = runtime_n, .x = dx.ptr, .y = dy.ptr, .out = dout.ptr });
+    }
+    const kernel_only = k_bench.total();
 
     try dout.copyToHost(host_out);
 
@@ -109,25 +102,22 @@ pub fn main(init: std.process.Init) !void {
     }
 
     // ── End-to-end: copy in + kernel + copy out, all timed ───────────
-    const e_start = try cuda.Event.create();
-    defer e_start.deinit();
-    const e_end = try cuda.Event.create();
-    defer e_end.deinit();
-
-    try e_start.record(null);
-    try dx.copyFromHost(host_x);
-    try dy.copyFromHost(host_y);
-    try kernel.launch(.{
-        .grid = .{ .x = grid },
-        .block = .{ .x = block },
-    }, .{ .n = runtime_n, .x = dx.ptr, .y = dy.ptr, .out = dout.ptr });
-    try dout.copyToHost(host_out);
-    try e_end.record(null);
-
-    try e_end.synchronize();
-    const end_to_end_ms = try cuda.Event.elapsed(e_start, e_end);
+    var e_bench = try cuda.Bench.init(io, .{});
+    defer e_bench.deinit();
+    while (try e_bench.next()) {
+        try dx.copyFromHost(host_x);
+        try dy.copyFromHost(host_y);
+        try kernel.launch(.{
+            .grid = .{ .x = grid },
+            .block = .{ .x = block },
+        }, .{ .n = runtime_n, .x = dx.ptr, .y = dy.ptr, .out = dout.ptr });
+        try dout.copyToHost(host_out);
+    }
+    const end_to_end = e_bench.total();
 
     // ── Report ───────────────────────────────────────────────────────
+    const kernel_only_ms = kernel_only.median_ms;
+    const end_to_end_ms = end_to_end.median_ms;
     const k_speedup = cpu_ms / kernel_only_ms;
     const e_speedup = cpu_ms / end_to_end_ms;
     const transfer_ms = end_to_end_ms - kernel_only_ms;
@@ -141,6 +131,9 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("PCIe transfer overhead:     {d:.3} ms  ({d:.0}% of end-to-end)\n", .{
         transfer_ms,
         100.0 * transfer_ms / end_to_end_ms,
+    });
+    std.debug.print("GPU timing: medians of {d} kernel and {d} end-to-end runs, each after a {d} ms warm-up (kernel min {d:.3}, max {d:.3} ms)\n", .{
+        kernel_only.runs, end_to_end.runs, k_bench.opts.warmup_ms, kernel_only.min_ms, kernel_only.max_ms,
     });
     if (max_err > 1e-5) return error.VerificationFailed;
 }

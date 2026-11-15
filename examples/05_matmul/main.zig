@@ -92,48 +92,40 @@ pub fn main(init: std.process.Init) !void {
     try dev_a.copyFromHost(host_a);
     try dev_b.copyFromHost(host_b);
 
-    const k_start = try cuda.Event.create();
-    defer k_start.deinit();
-    const k_end = try cuda.Event.create();
-    defer k_end.deinit();
-
     const grid_dim: u32 = N / TILE; // 64 for N=1024
     const M: u32 = N;
     const K: u32 = N;
     const N_arg: u32 = N;
 
-    try k_start.record(null);
-
-    try kernel.launch(.{
-        .grid = .{ .x = grid_dim, .y = grid_dim },
-        .block = .{ .x = TILE, .y = TILE },
-    }, .{ .M = M, .N = N_arg, .K = K, .A = dev_a.ptr, .B = dev_b.ptr, .C = dev_c.ptr });
-
-    try k_end.record(null);
-    try k_end.synchronize();
-    const kernel_only_ms = try cuda.Event.elapsed(k_start, k_end);
+    var k_bench = try cuda.Bench.init(io, .{});
+    defer k_bench.deinit();
+    while (try k_bench.next()) {
+        try kernel.launch(.{
+            .grid = .{ .x = grid_dim, .y = grid_dim },
+            .block = .{ .x = TILE, .y = TILE },
+        }, .{ .M = M, .N = N_arg, .K = K, .A = dev_a.ptr, .B = dev_b.ptr, .C = dev_c.ptr });
+    }
+    const kernel_only = k_bench.total();
+    const kernel_only_ms = kernel_only.median_ms;
 
     try dev_c.copyToHost(host_c);
 
     // ── End-to-end timing: copy in + kernel + copy out ───────────────
-    const e_start = try cuda.Event.create();
-    defer e_start.deinit();
-    const e_end = try cuda.Event.create();
-    defer e_end.deinit();
+    var e_bench = try cuda.Bench.init(io, .{});
+    defer e_bench.deinit();
+    while (try e_bench.next()) {
+        try dev_a.copyFromHost(host_a);
+        try dev_b.copyFromHost(host_b);
 
-    try e_start.record(null);
-    try dev_a.copyFromHost(host_a);
-    try dev_b.copyFromHost(host_b);
+        try kernel.launch(.{
+            .grid = .{ .x = grid_dim, .y = grid_dim },
+            .block = .{ .x = TILE, .y = TILE },
+        }, .{ .M = M, .N = N_arg, .K = K, .A = dev_a.ptr, .B = dev_b.ptr, .C = dev_c.ptr });
 
-    try kernel.launch(.{
-        .grid = .{ .x = grid_dim, .y = grid_dim },
-        .block = .{ .x = TILE, .y = TILE },
-    }, .{ .M = M, .N = N_arg, .K = K, .A = dev_a.ptr, .B = dev_b.ptr, .C = dev_c.ptr });
-
-    try dev_c.copyToHost(host_c);
-    try e_end.record(null);
-    try e_end.synchronize();
-    const end_to_end_ms = try cuda.Event.elapsed(e_start, e_end);
+        try dev_c.copyToHost(host_c);
+    }
+    const end_to_end = e_bench.total();
+    const end_to_end_ms = end_to_end.median_ms;
 
     // ── Verify ───────────────────────────────────────────────────────
     // For all-ones matrices, every cell of C should equal K = N = 1024.
@@ -161,5 +153,8 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("CPU naive triple loop: {d:.1} ms  ({d:.2} GFLOPS)\n", .{ cpu_ms, cpu_gflops });
     std.debug.print("GPU kernel only:       {d:.3} ms  ({d:.2} GFLOPS, {d:.0}x vs CPU)\n", .{ kernel_only_ms, gpu_gflops, cpu_ms / kernel_only_ms });
     std.debug.print("GPU end-to-end:        {d:.3} ms  ({d:.0}x vs CPU)\n", .{ end_to_end_ms, cpu_ms / end_to_end_ms });
+    std.debug.print("GPU timing: medians of {d} kernel and {d} end-to-end runs, each after a {d} ms warm-up (kernel min {d:.3}, max {d:.3} ms)\n", .{
+        kernel_only.runs, end_to_end.runs, k_bench.opts.warmup_ms, kernel_only.min_ms, kernel_only.max_ms,
+    });
     if (first_bad != null) return error.VerificationFailed;
 }

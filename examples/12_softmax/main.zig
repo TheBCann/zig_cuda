@@ -77,24 +77,21 @@ pub fn main(init: std.process.Init) !void {
 
     try dev_in.copyFromHost(host_input);
 
-    const k_start = try cuda.Event.create();
-    defer k_start.deinit();
-    const k_end = try cuda.Event.create();
-    defer k_end.deinit();
-
     // One block per row of the (N, N) matrix.
-    try k_start.record(null);
-    try kernel.launch(.{
-        .grid = .{ .x = N },
-        .block = .{ .x = BLOCK_SIZE },
-    }, .{
-        .n = N,
-        .input = dev_in.ptr,
-        .output = dev_out.ptr,
-    });
-    try k_end.record(null);
-    try k_end.synchronize();
-    const kernel_ms = try cuda.Event.elapsed(k_start, k_end);
+    var bench = try cuda.Bench.init(io, .{});
+    defer bench.deinit();
+    while (try bench.next()) {
+        try kernel.launch(.{
+            .grid = .{ .x = N },
+            .block = .{ .x = BLOCK_SIZE },
+        }, .{
+            .n = N,
+            .input = dev_in.ptr,
+            .output = dev_out.ptr,
+        });
+    }
+    const timing = bench.total();
+    const kernel_ms = timing.median_ms;
 
     try dev_out.copyToHost(host_output);
 
@@ -129,8 +126,10 @@ pub fn main(init: std.process.Init) !void {
     }
 
     // ── Performance ──────────────────────────────────────────────────
-    // Softmax is memory-bound: each element read 3× and written 2× over
-    // the three passes. Useful metric is effective GB/s.
+    // Each element is read 3× and written 2× over the three passes; the
+    // example reports that traffic as "effective GB/s". It can exceed the
+    // card's memory bandwidth, because repeat passes over a 2 KB row do
+    // not all reach DRAM.
     const bytes_moved: f64 = @as(f64, @floatFromInt(elements)) * @sizeOf(f32) * 5.0;
     const gpu_gbs = bytes_moved / (@as(f64, kernel_ms) * 1.0e6);
 
@@ -158,6 +157,9 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("CPU softmax:  {d:.3} ms\n", .{cpu_ms});
     std.debug.print("GPU softmax:  {d:.3} ms  ({d:.1}x vs CPU, {d:.1} GB/s effective)\n", .{
         kernel_ms, cpu_ms / kernel_ms, gpu_gbs,
+    });
+    std.debug.print("GPU timing: median of {d} runs after a {d} ms warm-up (min {d:.3}, max {d:.3} ms)\n", .{
+        timing.runs, bench.opts.warmup_ms, timing.min_ms, timing.max_ms,
     });
     if (first_bad != null or sum_check_max_err > 1e-5) return error.VerificationFailed;
 }

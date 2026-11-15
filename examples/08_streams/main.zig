@@ -29,6 +29,7 @@ const NUM_STREAMS: u32 = 2;
 
 pub fn main(init: std.process.Init) !void {
     const a = init.gpa;
+    const io = init.io;
 
     try cuda.init();
     const dev = try cuda.Device.get(0);
@@ -75,28 +76,25 @@ pub fn main(init: std.process.Init) !void {
     const dout = try Buf.alloc(N);
     defer dout.free();
 
-    const sync_start = try cuda.Event.create();
-    defer sync_start.deinit();
-    const sync_end = try cuda.Event.create();
-    defer sync_end.deinit();
-
     const runtime_n = N;
     const block: c_uint = 256;
     const grid: c_uint = (N + block - 1) / block;
 
-    try sync_start.record(null);
-    try dx.copyFromHost(host_x);
-    try dy.copyFromHost(host_y);
+    var sync_bench = try cuda.Bench.init(io, .{});
+    defer sync_bench.deinit();
+    while (try sync_bench.next()) {
+        try dx.copyFromHost(host_x);
+        try dy.copyFromHost(host_y);
 
-    try kernel.launch(.{
-        .grid = .{ .x = grid },
-        .block = .{ .x = block },
-    }, .{ .n = runtime_n, .x = dx.ptr, .y = dy.ptr, .out = dout.ptr });
+        try kernel.launch(.{
+            .grid = .{ .x = grid },
+            .block = .{ .x = block },
+        }, .{ .n = runtime_n, .x = dx.ptr, .y = dy.ptr, .out = dout.ptr });
 
-    try dout.copyToHost(host_out_sync);
-    try sync_end.record(null);
-    try sync_end.synchronize();
-    const sync_ms = try cuda.Event.elapsed(sync_start, sync_end);
+        try dout.copyToHost(host_out_sync);
+    }
+    const sync = sync_bench.total();
+    const sync_ms = sync.median_ms;
 
     // Verify correctness on the sync result.
     var sync_max_err: f32 = 0;
@@ -124,68 +122,65 @@ pub fn main(init: std.process.Init) !void {
     for (&streams) |*s| s.* = try cuda.Stream.create();
     defer for (streams) |s| s.deinit();
 
-    const stream_start = try cuda.Event.create();
-    defer stream_start.deinit();
-    const stream_end = try cuda.Event.create();
-    defer stream_end.deinit();
-
     // Pipeline: each chunk runs entirely on one stream, but consecutive
     // chunks alternate streams. While chunk i's kernel is running on
     // stream A, chunk i+1 can upload on stream B, and chunk i-1 can
     // download on stream B's download engine — all in parallel.
-    try stream_start.record(null);
+    var stream_bench = try cuda.Bench.init(io, .{});
+    defer stream_bench.deinit();
+    while (try stream_bench.next()) {
+        var chunk_idx: u32 = 0;
+        while (chunk_idx < K) : (chunk_idx += 1) {
+            const stream = streams[chunk_idx % NUM_STREAMS];
+            const offset = chunk_idx * CHUNK;
+            const chunk_grid: c_uint = (CHUNK + block - 1) / block;
+            const chunk_n = CHUNK;
 
-    var chunk_idx: u32 = 0;
-    while (chunk_idx < K) : (chunk_idx += 1) {
-        const stream = streams[chunk_idx % NUM_STREAMS];
-        const offset = chunk_idx * CHUNK;
-        const chunk_grid: c_uint = (CHUNK + block - 1) / block;
-        const chunk_n = CHUNK;
+            // Async upload of this chunk's slice of x and y.
+            const x_slice = pin_x.slice()[offset .. offset + CHUNK];
+            const y_slice = pin_y.slice()[offset .. offset + CHUNK];
+            const out_slice = pin_out.slice()[offset .. offset + CHUNK];
 
-        // Async upload of this chunk's slice of x and y.
-        const x_slice = pin_x.slice()[offset .. offset + CHUNK];
-        const y_slice = pin_y.slice()[offset .. offset + CHUNK];
-        const out_slice = pin_out.slice()[offset .. offset + CHUNK];
+            const dx_off: cuda.bindings.CUdeviceptr = dx.ptr + offset * @sizeOf(f32);
+            const dy_off: cuda.bindings.CUdeviceptr = dy.ptr + offset * @sizeOf(f32);
+            const dout_off: cuda.bindings.CUdeviceptr = dout.ptr + offset * @sizeOf(f32);
 
-        const dx_off: cuda.bindings.CUdeviceptr = dx.ptr + offset * @sizeOf(f32);
-        const dy_off: cuda.bindings.CUdeviceptr = dy.ptr + offset * @sizeOf(f32);
-        const dout_off: cuda.bindings.CUdeviceptr = dout.ptr + offset * @sizeOf(f32);
+            // Manually issue async copies and the launch with this stream.
+            // The library's typed wrappers always operate on the full buffer;
+            // for sub-buffer ops we drop down to the raw bindings.
+            try toErr(cuda.bindings.cuMemcpyHtoDAsync_v2(
+                dx_off,
+                x_slice.ptr,
+                CHUNK * @sizeOf(f32),
+                stream.handle,
+            ));
+            try toErr(cuda.bindings.cuMemcpyHtoDAsync_v2(
+                dy_off,
+                y_slice.ptr,
+                CHUNK * @sizeOf(f32),
+                stream.handle,
+            ));
 
-        // Manually issue async copies and the launch with this stream.
-        // The library's typed wrappers always operate on the full buffer;
-        // for sub-buffer ops we drop down to the raw bindings.
-        try toErr(cuda.bindings.cuMemcpyHtoDAsync_v2(
-            dx_off,
-            x_slice.ptr,
-            CHUNK * @sizeOf(f32),
-            stream.handle,
-        ));
-        try toErr(cuda.bindings.cuMemcpyHtoDAsync_v2(
-            dy_off,
-            y_slice.ptr,
-            CHUNK * @sizeOf(f32),
-            stream.handle,
-        ));
+            try kernel.launch(.{
+                .grid = .{ .x = chunk_grid },
+                .block = .{ .x = block },
+                .stream = stream.handle,
+            }, .{ .n = chunk_n, .x = dx_off, .y = dy_off, .out = dout_off });
 
-        try kernel.launch(.{
-            .grid = .{ .x = chunk_grid },
-            .block = .{ .x = block },
-            .stream = stream.handle,
-        }, .{ .n = chunk_n, .x = dx_off, .y = dy_off, .out = dout_off });
+            try toErr(cuda.bindings.cuMemcpyDtoHAsync_v2(
+                out_slice.ptr,
+                dout_off,
+                CHUNK * @sizeOf(f32),
+                stream.handle,
+            ));
+        }
 
-        try toErr(cuda.bindings.cuMemcpyDtoHAsync_v2(
-            out_slice.ptr,
-            dout_off,
-            CHUNK * @sizeOf(f32),
-            stream.handle,
-        ));
+        // Drain every stream before the repetition is closed: the
+        // benchmark's closing mark only waits for the default stream.
+        for (streams) |s| try s.synchronize();
     }
-
-    // Wait for all streams to drain before stopping the timer.
-    for (streams) |s| try s.synchronize();
-    try stream_end.record(null);
-    try stream_end.synchronize();
-    const stream_ms = try cuda.Event.elapsed(stream_start, stream_end);
+    const streamed = stream_bench.total();
+    const stream_ms = streamed.median_ms;
 
     // Verify the streamed result matches.
     var stream_max_err: f32 = 0;
@@ -210,6 +205,9 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("Sync baseline (pageable, default stream):  {d:.3} ms ({d:.1} GB/s effective)\n", .{ sync_ms, sync_gbps });
     std.debug.print("Streamed (pinned, {d} streams, {d} chunks): {d:.3} ms ({d:.1} GB/s effective)\n", .{ NUM_STREAMS, K, stream_ms, stream_gbps });
     std.debug.print("Speedup: {d:.2}x\n", .{speedup});
+    std.debug.print("GPU timing: medians of {d} sync and {d} streamed runs, each after a {d} ms warm-up\n", .{
+        sync.runs, streamed.runs, sync_bench.opts.warmup_ms,
+    });
     if (sync_max_err > 1e-5 or stream_max_err > 1e-5) return error.VerificationFailed;
 }
 
